@@ -201,6 +201,150 @@ async function saveScan(scan){
   }
 }
 
+/* =======================================================================
+   LIVE npm SCAN via deps.dev (https://deps.dev) — no API key needed.
+   GET /api/scan?package=NAME resolves the default version, fetches the
+   dependency graph, looks up each package's license, and returns the
+   SAME { packages, dependencies } shape the UI's contamination logic uses.
+======================================================================= */
+const MAX_DISPLAY = 150;   // nodes shown in the graph
+const MAX_LOOKUPS = 400;   // hard ceiling on license HTTP calls (bounds time)
+const CONCURRENCY = 10;    // parallel license lookups
+
+class HttpError extends Error { constructor(code,msg){ super(msg); this.code=code; } }
+
+/* same copyleft rule as the client */
+function isCopyleft(license){ return /GPL/i.test(license || ""); }
+
+/* GET JSON over https with a timeout. Throws HttpError on non-2xx. */
+function getJson(url, timeoutMs=8000){
+  return new Promise((resolve, reject)=>{
+    const req = https.get(url, { headers:{ "Accept":"application/json" } }, res=>{
+      let d = "";
+      res.on("data", c=> d += c);
+      res.on("end", ()=>{
+        if(res.statusCode < 200 || res.statusCode >= 300){
+          return reject(new HttpError(res.statusCode, "deps.dev HTTP " + res.statusCode));
+        }
+        try{ resolve(JSON.parse(d)); }catch(e){ reject(new HttpError(502, "bad JSON from deps.dev")); }
+      });
+    });
+    req.on("error", e=> reject(new HttpError(502, e.message)));
+    req.setTimeout(timeoutMs, ()=>{ req.destroy(new HttpError(504, "deps.dev timed out")); });
+  });
+}
+
+/* run async fn over items with a concurrency limit */
+async function mapLimit(items, limit, fn){
+  const out = new Array(items.length);
+  let i = 0;
+  async function worker(){
+    while(i < items.length){
+      const idx = i++;
+      out[idx] = await fn(items[idx], idx);
+    }
+  }
+  await Promise.all(Array.from({length:Math.min(limit, items.length)}, worker));
+  return out;
+}
+
+const DD = "https://api.deps.dev/v3/systems/npm/packages/";
+const enc = s => encodeURIComponent(s);   // handles scoped names like @babel/core
+
+async function scanNpmPackage(name){
+  // 1. resolve the default version
+  let meta;
+  try{ meta = await getJson(DD + enc(name)); }
+  catch(e){ if(e.code===404) throw new HttpError(404, "package not found"); throw e; }
+  const versions = meta.versions || [];
+  const def = versions.find(v=>v.isDefault) || versions[0];
+  if(!def) throw new HttpError(404, "no published version for " + name);
+  const rootVersion = def.versionKey.version;
+
+  // 2. fetch the dependency tree (note the COLON before dependencies)
+  const tree = await getJson(DD + enc(name) + "/versions/" + enc(rootVersion) + ":dependencies");
+  const nodes = tree.nodes || [];
+  const edgesIdx = tree.edges || [];
+  if(!nodes.length) throw new HttpError(404, "no dependency data for " + name);
+
+  // adjacency by node index (for BFS)
+  const adj = nodes.map(()=>[]);
+  edgesIdx.forEach(e=>{ if(adj[e.fromNode]) adj[e.fromNode].push(e.toNode); });
+  const ROOT = Math.max(0, nodes.findIndex(n=>n.relation==="SELF"));
+
+  // 3. license lookups, parallel + bounded
+  const lookupCount = Math.min(nodes.length, MAX_LOOKUPS);
+  const lic = new Array(nodes.length).fill("unknown");
+  await mapLimit(Array.from({length:lookupCount},(_,i)=>i), CONCURRENCY, async i=>{
+    const vk = nodes[i].versionKey;
+    try{
+      const v = await getJson(DD + enc(vk.name) + "/versions/" + enc(vk.version));
+      const j = (v.licenses || []).join(" OR ");
+      lic[i] = j || "unknown";
+    }catch{ lic[i] = "unknown"; }   // missing license -> "unknown", never fail the scan
+  });
+
+  // 4. pick displayed nodes: PRIORITISE copyleft nodes AND their path to root,
+  //    so the cap can never hide a contamination chain. Then fill by BFS order.
+  const bfsParents = ()=>{
+    const parent = new Array(nodes.length).fill(undefined);
+    const seen = new Array(nodes.length).fill(false);
+    const q=[ROOT]; seen[ROOT]=true;
+    while(q.length){ const u=q.shift();
+      for(const w of adj[u]) if(!seen[w]){ seen[w]=true; parent[w]=u; q.push(w); } }
+    return parent;
+  };
+  const bfsOrder = ()=>{
+    const seen=new Array(nodes.length).fill(false), order=[], q=[ROOT]; seen[ROOT]=true;
+    while(q.length){ const u=q.shift(); order.push(u);
+      for(const w of adj[u]) if(!seen[w]){ seen[w]=true; q.push(w); } }
+    return order;
+  };
+  const parent = bfsParents();
+  const keep = new Set([ROOT]);
+  // a) copyleft nodes + their ancestor chain to root
+  nodes.forEach((_,i)=>{
+    if(!isCopyleft(lic[i])) return;
+    let cur=i, chain=[];
+    while(cur!==undefined && cur!==ROOT){ chain.push(cur); cur=parent[cur]; }
+    if(cur===ROOT){ chain.push(ROOT); chain.forEach(x=>keep.add(x)); }
+    else keep.add(i);   // unreachable in BFS, still keep the node itself
+  });
+  // b) fill remaining slots by BFS proximity to root
+  for(const i of bfsOrder()){
+    if(keep.size >= MAX_DISPLAY) break;
+    keep.add(i);
+  }
+  const truncated = keep.size < nodes.length;
+
+  // 5. unique display ids (suffix @version only when a name collides)
+  const kept = [...keep];
+  const nameCount = {};
+  kept.forEach(i=>{ const n=nodes[i].versionKey.name; nameCount[n]=(nameCount[n]||0)+1; });
+  const idOf = i=>{
+    const vk = nodes[i].versionKey;
+    return nameCount[vk.name] > 1 ? vk.name + "@" + vk.version : vk.name;
+  };
+
+  // 6. assemble packages + dependencies in the existing shape
+  const packages = kept.map(i=>({ name: idOf(i), license: lic[i] }));
+  const seenEdge = new Set();
+  const dependencies = [];
+  edgesIdx.forEach(e=>{
+    if(!keep.has(e.fromNode) || !keep.has(e.toNode) || e.fromNode===e.toNode) return;
+    const k = e.fromNode + ">" + e.toNode;
+    if(seenEdge.has(k)) return; seenEdge.add(k);
+    dependencies.push({ parent: idOf(e.fromNode), child: idOf(e.toNode) });
+  });
+
+  return {
+    root: idOf(ROOT),
+    rootVersion,
+    packages, dependencies,
+    truncated, total: nodes.length, shown: kept.length,
+  };
+}
+
 /* ---- static file serving ------------------------------------------- */
 const MIME = { ".html":"text/html", ".csv":"text/csv", ".js":"text/javascript",
                ".css":"text/css", ".md":"text/markdown" };
@@ -216,6 +360,28 @@ function serveFile(res, file){
 /* ---- routes -------------------------------------------------------- */
 http.createServer(async (req, res)=>{
   const url = req.url.split("?")[0];
+
+  if(url === "/api/scan"){
+    const q = new URLSearchParams(req.url.split("?")[1] || "");
+    const name = (q.get("package") || "").trim();
+    if(!name){
+      res.writeHead(400, {"Content-Type":"application/json"});
+      return res.end(JSON.stringify({ error:"missing ?package=NAME" }));
+    }
+    try{
+      const data = await scanNpmPackage(name);
+      console.log(`🔍 live scan: ${name} → ${data.shown}/${data.total} pkgs` +
+        (data.truncated ? " (truncated)" : ""));
+      res.writeHead(200, {"Content-Type":"application/json"});
+      res.end(JSON.stringify(data));
+    }catch(err){
+      const code = err.code && err.code>=400 && err.code<600 ? err.code : 500;
+      console.log(`⚠️  live scan failed for ${name}: ${err.message}`);
+      res.writeHead(code, {"Content-Type":"application/json"});
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
 
   if(url === "/api/sources"){
     try{

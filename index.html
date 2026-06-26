@@ -95,6 +95,7 @@
   .node.permissive rect{fill:var(--green-dim); stroke:var(--green);}
   .node.copyleft   rect{fill:var(--red-dim);   stroke:var(--red);}
   .node.root       rect{fill:var(--root-dim);  stroke:var(--root); stroke-width:3;}
+  .node.unknown    rect{fill:#1c2230;          stroke:#5b6577;}
 
   /* highlight + animation for the contaminated path */
   .node.onpath rect{filter:drop-shadow(0 0 8px var(--red)); animation:pulse 1.1s ease-in-out infinite;}
@@ -121,6 +122,8 @@
   <div class="controls">
     <input id="rootInput" type="text" value="gatsby" spellcheck="false" />
     <button id="runBtn">Run scan</button>
+    <!-- live mode: scans any real npm package via deps.dev (server-side) -->
+    <button id="npmBtn" style="background:#0e7d57">Scan live npm →</button>
 
     <!-- THE KICKER: live license toggle on smartwrap. Runs on the embedded
          data (not the API), so it works fully right now. -->
@@ -197,16 +200,31 @@ function parseCSV(text){
   });
 }
 
-// licenses: name -> license string. MUTABLE — the smartwrap toggle edits it.
-const licenses = {};
-parseCSV(PACKAGES_CSV).forEach(p=> licenses[p.name] = p.license);
+/* -----------------------------------------------------------------------
+   GRAPH STATE — rebuildable so we can load EITHER the embedded gatsby demo
+   OR a live npm scan into the same UI. setGraph() repopulates everything
+   and recomputes the layout; rootName tracks which node is the root.
+----------------------------------------------------------------------- */
+let licenses = {};   // name -> license string (smartwrap toggle edits this)
+let edges    = [];   // [{parent, child}]
+let children = {};   // parent -> [children]
+let rootName = "gatsby";
+let truncationNote = null;   // text shown when a live tree was capped
 
-// edges + adjacency (this is a tree: each child has exactly one parent)
-const edges = parseCSV(DEPENDENCIES_CSV).map(d=>({parent:d.parent, child:d.child}));
-const children = {};                 // parent -> [children] in file order
-edges.forEach(({parent,child})=>{
-  (children[parent] ||= []).push(child);
-});
+function setGraph(pkgs, deps, root){
+  licenses = {};
+  pkgs.forEach(p=> licenses[p.name] = p.license || "unknown");
+  edges = deps.map(d=>({parent:d.parent, child:d.child}));
+  children = {};
+  edges.forEach(({parent,child})=>{ (children[parent] ||= []).push(child); });
+  rootName = root;
+  computeLayout(root);
+}
+
+/* the embedded demo data, kept so the smartwrap toggle can restore it */
+const DEMO_PACKAGES = parseCSV(PACKAGES_CSV).map(p=>({name:p.name, license:p.license}));
+const DEMO_DEPS     = parseCSV(DEPENDENCIES_CSV).map(d=>({parent:d.parent, child:d.child}));
+function loadDemoGraph(){ truncationNote=null; setGraph(DEMO_PACKAGES, DEMO_DEPS, "gatsby"); }
 
 /* A license is "copyleft" if it mentions GPL (covers GPL/AGPL/LGPL). */
 function isCopyleft(license){ return /GPL/i.test(license || ""); }
@@ -259,8 +277,10 @@ async function getContaminationResult(root){
 ======================================================================= */
 function deriveContamination(root){
   let found = null;
+  const seen = new Set();   // cycle guard — npm graphs are DAGs with cycles
   (function dfs(node, trail){
-    if(found) return;
+    if(found || seen.has(node)) return;
+    seen.add(node);
     const trail2 = [...trail, node];
     if(node !== root && isCopyleft(licenses[node])){ found = trail2; return; }
     for(const c of (children[node] || [])) dfs(c, trail2);
@@ -283,29 +303,46 @@ function deriveContamination(root){
 }
 
 /* =======================================================================
-   4. GRAPH LAYOUT  (computed once — positions don't change with licenses)
-   Simple tree layout: leaves get evenly spaced x positions in DFS order,
-   internal nodes sit at the average x of their children. y = depth.
+   4. GRAPH LAYOUT — BFS-layered, robust to cycles and multi-parent nodes.
+   Each node's row = its shortest-hop distance from the root; nodes on the
+   same row are spread horizontally. For the gatsby tree this matches the
+   old tree layout; for real npm DAGs it stays sane. Recomputed by setGraph.
 ======================================================================= */
 const H_GAP = 175, V_GAP = 110, NODE_H = 46, PAD = 40;
-const pos = {};   // name -> {x,y,depth}
-(function layout(){
-  let leafX = 0;
-  (function assign(node, depth){
-    const kids = children[node] || [];
-    pos[node] = {x:0, y:depth*V_GAP + PAD, depth};
-    if(kids.length === 0){
-      pos[node].x = leafX * H_GAP + PAD + 80;
-      leafX++;
-    }else{
-      kids.forEach(k=>assign(k, depth+1));
-      // center over children
-      pos[node].x = (pos[kids[0]].x + pos[kids[kids.length-1]].x)/2;
+let pos = {};   // name -> {x,y,depth}
+
+function computeLayout(root){
+  pos = {};
+  // BFS to assign each node a depth (shortest hops from root)
+  const depth = { [root]: 0 };
+  const queue = [root];
+  const seen = new Set([root]);
+  while(queue.length){
+    const u = queue.shift();
+    for(const c of (children[u] || [])){
+      if(!seen.has(c)){ seen.add(c); depth[c] = depth[u] + 1; queue.push(c); }
     }
-  })("gatsby", 0);
-})();
+  }
+  // any node never reached from root (shouldn't happen, but be safe) -> last row
+  let maxDepth = 0;
+  Object.keys(licenses).forEach(n=>{
+    if(depth[n] === undefined) depth[n] = (maxDepth || 0) + 1;
+    maxDepth = Math.max(maxDepth, depth[n]);
+  });
+  // group by depth, then spread each row horizontally
+  const rows = {};
+  Object.keys(depth).forEach(n=>{ (rows[depth[n]] ||= []).push(n); });
+  Object.keys(rows).forEach(d=>{
+    rows[d].forEach((n, i)=>{
+      pos[n] = { x: i * H_GAP + PAD + 80, y: (+d) * V_GAP + PAD, depth: +d };
+    });
+  });
+}
 
 function nodeWidth(name){ return Math.max(104, name.length*7.4 + 26); }
+
+// initialise with the embedded gatsby demo so the page renders on first paint
+loadDemoGraph();
 
 /* =======================================================================
    5. RENDER
@@ -314,7 +351,8 @@ const svg    = document.getElementById("graph");
 const banner = document.getElementById("banner");
 
 function classFor(name){
-  if(name === "gatsby") return "root";
+  if(name === rootName) return "root";
+  if(licenses[name] === "unknown" || licenses[name] === undefined) return "unknown";
   return isCopyleft(licenses[name]) ? "copyleft" : "permissive";
 }
 
@@ -324,10 +362,14 @@ function render(result){
   const pathText = result.contaminated
     ? result.path.map(p=>`${p.name} (${p.license})`).join("  →  ")
     : "";
+  const srcLabel = result.__npm   ? "live scan · deps.dev"
+                 : result.__live  ? "live re-derive (embedded data)"
+                 :                   "Prometheux API (stubbed)";
   banner.innerHTML =
     `<strong>${result.verdict}</strong>` +
     (pathText ? `<span class="path">${pathText}</span>` : "") +
-    `<span class="src">Source: ${result.__live ? "live re-derive (embedded data)" : "Prometheux API (stubbed)"}</span>`;
+    (truncationNote ? `<span class="src">⚠ ${truncationNote}</span>` : "") +
+    `<span class="src">Source: ${srcLabel}</span>`;
 
   // sets for highlighting
   const onPath = new Set(result.path.map(p=>p.name));
@@ -361,7 +403,7 @@ function render(result){
   Object.keys(pos).forEach(name=>{
     const p = pos[name], w = nodeWidth(name);
     const cls = classFor(name) + (onPath.has(name) ? " onpath" : "");
-    const rootTag = name==="gatsby" ? `<text class="lic" x="${p.x}" y="${p.y-6}" text-anchor="middle">ROOT</text>` : "";
+    const rootTag = name===rootName ? `<text class="lic" x="${p.x}" y="${p.y-6}" text-anchor="middle">ROOT</text>` : "";
     nodeHTML += `
       <g class="node ${cls}">
         ${rootTag}
@@ -437,6 +479,7 @@ async function fetchSources(){
    6. WIRING
 ======================================================================= */
 const runBtn   = document.getElementById("runBtn");
+const npmBtn   = document.getElementById("npmBtn");
 const rootInput= document.getElementById("rootInput");
 const swSelect = document.getElementById("smartwrapLicense");
 
@@ -447,6 +490,7 @@ async function runScan(){
   runBtn.disabled = true;
   const original = runBtn.textContent;
   runBtn.textContent = "Scanning… (Prometheux)";
+  loadDemoGraph();                  // restore the embedded gatsby tree (pristine demo)
   swSelect.value = "GPL-2.0";
   licenses["smartwrap"] = "GPL-2.0";
   banner.className = "banner clean";
@@ -461,9 +505,63 @@ async function runScan(){
 }
 runBtn.addEventListener("click", runScan);
 
-// THE KICKER — live, instant, runs on embedded data (no API).
+/* -----------------------------------------------------------------------
+   LIVE npm MODE — scans any real npm package via the server (/api/scan),
+   which calls deps.dev. Loads the result into the SAME graph/verdict UI
+   and runs the existing contamination logic over it.
+----------------------------------------------------------------------- */
+async function scanNpm(){
+  const name = rootInput.value.trim();
+  if(!name) return;
+  npmBtn.disabled = runBtn.disabled = true;
+  const original = npmBtn.textContent;
+  sourcesBox.style.display = "none";   // live mode doesn't fetch Tavily citations
+
+  banner.className = "banner clean";
+  banner.innerHTML = `<strong>Resolving ${name} from deps.dev…</strong>`;
+  npmBtn.textContent = "Scanning…";
+
+  try{
+    const res = await fetch("/api/scan?package=" + encodeURIComponent(name));
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+
+    banner.innerHTML = `<strong>Tracing licenses across ${data.shown} packages…</strong>`;
+
+    // load the live tree into the shared graph state, then run the EXISTING
+    // contamination logic over it.
+    setGraph(data.packages, data.dependencies, data.root);
+    truncationNote = data.truncated
+      ? `tree truncated to ${data.shown} packages for display (of ${data.total}; copyleft packages were prioritised)`
+      : null;
+
+    const result = deriveContamination(data.root);
+    if(!result.contaminated){
+      result.verdict = "✅ No contamination found — clean tree";
+    }
+    result.__npm = true;
+    render(result);
+  }catch(err){
+    truncationNote = null;
+    banner.className = "banner contaminated";
+    banner.innerHTML =
+      `<strong>Couldn't scan “${name}”.</strong>` +
+      `<span class="src">${err.message}. Try an exact npm package name (e.g. gatsby, express, eslint). ` +
+      `Live mode needs the server running — open http://localhost:3000.</span>`;
+  }finally{
+    npmBtn.textContent = original;
+    npmBtn.disabled = runBtn.disabled = false;
+  }
+}
+npmBtn.addEventListener("click", scanNpm);
+
+// THE KICKER — live, instant, runs on embedded data (no API). Restores the
+// gatsby demo graph first, so it works even after a live npm scan.
 swSelect.addEventListener("change", ()=>{
+  loadDemoGraph();                               // back to the embedded tree
   licenses["smartwrap"] = swSelect.value;        // mutate the data
+  rootInput.value = "gatsby";
+  sourcesBox.style.display = "none";
   const result = deriveContamination("gatsby");  // recompute locally
   result.__live = true;                          // label the source
   render(result);
