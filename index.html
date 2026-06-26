@@ -608,9 +608,24 @@ swSelect.addEventListener("change", ()=>{
   render(result);
 });
 
-// initial load: show the Gatsby contamination example (smartwrap = GPL-2.0),
-// so the headline demo is visible immediately and one click re-loads it.
-window.addEventListener("DOMContentLoaded", loadExample);
+// the normal / empty starting state — no example preloaded. The Gatsby
+// demo is one obvious click away via the "Example: Gatsby case" button.
+function showInitialState(){
+  rootInput.value = "";
+  showDemoToggle(false);
+  sourcesBox.style.display = "none";
+  banner.className = "banner clean";
+  banner.innerHTML =
+    `<strong>Scan a package to trace its license contamination.</strong>` +
+    `<span class="src">Type an npm package name and click Scan — or load the ` +
+    `<em>Example: Gatsby case</em> (top right) for the demo.</span>`;
+  svg.innerHTML = "";
+  svg.setAttribute("width", 0);
+  svg.setAttribute("height", 0);
+}
+
+// initial load: start in the normal state (NOT the example).
+window.addEventListener("DOMContentLoaded", showInitialState);
 </script>
 </body>
 </html>

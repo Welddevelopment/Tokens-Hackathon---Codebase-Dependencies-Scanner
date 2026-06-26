@@ -352,7 +352,10 @@ const MIME = { ".html":"text/html", ".csv":"text/csv", ".js":"text/javascript",
 function serveFile(res, file){
   fs.readFile(path.join(__dirname, file), (err, buf)=>{
     if(err){ res.writeHead(404); return res.end("Not found"); }
-    res.writeHead(200, { "Content-Type": MIME[path.extname(file)] || "application/octet-stream" });
+    res.writeHead(200, {
+      "Content-Type": MIME[path.extname(file)] || "application/octet-stream",
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+    });
     res.end(buf);
   });
 }
