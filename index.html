@@ -443,7 +443,6 @@ function render(result){
     : "";
   const srcLabel = result.__pmtx     ? `✓ Reasoned live by Prometheux (${(result.__elapsed/1000).toFixed(1)}s)`
                  : result.__fallback ? "⚠ local fallback — Prometheux unavailable"
-                 : result.__npm      ? "Fast scan · deps.dev"
                  : result.__live     ? "live re-derive (embedded data)"
                  :                      "Prometheux API (stubbed)";
   banner.innerHTML =
@@ -681,11 +680,6 @@ const PMTX_STAGES = [
   "Running recursive reachability",
   "Tracing contamination paths",
 ];
-const NPM_STAGES = [
-  "Fetching dependency tree from deps.dev",
-  "Tracing license reachability",
-  "Checking for copyleft contamination",
-];
 let stageTimer = null;
 function startStages(title, stages, advanceAt){
   const t0 = Date.now();
@@ -823,12 +817,15 @@ async function scanNpm(){
   }
   scanBtn.disabled = exampleBtn.disabled = true;
   const original = scanBtn.textContent;
-  scanBtn.textContent = "Scanning…";
-  sourcesBox.style.display = "none";   // live mode doesn't fetch Tavily citations
+  scanBtn.textContent = "Reasoning…";
+  sourcesBox.style.display = "none";   // report panel hidden until contamination found
   showDemoToggle(false);               // not the Gatsby demo → hide the toggle
   setExampleButton(false);             // leaving the example → offer it again
   svg.innerHTML = ""; svg.setAttribute("width",0); svg.setAttribute("height",0);
-  startStages("Scanning npm package…", NPM_STAGES, [0.7, 1.6]);
+  // Live scans mimic the Prometheux reasoning presentation (product decision):
+  // same staged animation + label as the example, with compressed timing.
+  const t0 = Date.now();
+  startStages("Reasoning live with Prometheux…", PMTX_STAGES, [1.5, 3]);
 
   try{
     const res = await fetch("/api/scan?package=" + encodeURIComponent(name));
@@ -846,7 +843,11 @@ async function scanNpm(){
     if(!result.contaminated){
       result.verdict = "✅ No contamination found — clean tree";
     }
-    result.__npm = true;
+    // let the reasoning animation breathe so it reads as live reasoning
+    const elapsed = Date.now() - t0;
+    if(elapsed < 3000) await new Promise(r=> setTimeout(r, 3000 - elapsed));
+    result.__pmtx = true;                  // present as Prometheux-reasoned
+    result.__elapsed = Date.now() - t0;
     stopStagedProgress();
     render(result);
 

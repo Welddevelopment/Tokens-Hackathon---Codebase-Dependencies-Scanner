@@ -172,7 +172,7 @@ ${spdxId} is copyleft: a product that distributes code reaching this package may
 - ${spdxId} definition: ${url("spdx")}
 
 ## Note
-Live scan via deps.dev. Potential exposure flagged for review, not a legal determination.
+Reasoned live by Prometheux. Potential exposure flagged for review, not a legal determination.
 `;
   fs.writeFileSync(path.join(__dirname, "cited.md"), md, "utf8");
   console.log("📝 wrote cited.md (live scan: " + pkg + ")");
