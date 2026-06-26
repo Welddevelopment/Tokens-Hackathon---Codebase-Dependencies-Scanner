@@ -345,6 +345,52 @@ async function scanNpmPackage(name){
   };
 }
 
+/* =======================================================================
+   PROMETHEUX — run the saved `contaminated_path` concept (live reasoning).
+   Token stays server-side. Returns a normalised { ok, rows, columns,
+   elapsedMs } so the browser never sees the token and gets a stable shape.
+======================================================================= */
+const PMTX_CONCEPT_PATH = "api/v1/concepts/9e354b7f44/run/contaminated_path";
+
+function runConcept(){
+  return new Promise(resolve=>{
+    const base  = process.env.PMTX_API_URL;
+    const token = process.env.PMTX_TOKEN;
+    if(!base || !token) return resolve({ ok:false, error:"PMTX_API_URL / PMTX_TOKEN not set in .env" });
+
+    // build the exact path with /api/v1/, keep https, don't follow redirects
+    const url  = base.replace(/\/?$/,"/") + PMTX_CONCEPT_PATH;
+    const body = JSON.stringify({ params:{}, scope:"user", persist_outputs:false });
+    const t0   = Date.now();
+
+    const req = https.request(url, {
+      method:"POST",
+      headers:{
+        "Authorization":"Bearer " + token,
+        "Content-Type":"application/json",
+        "Accept":"application/json",
+        "Content-Length":Buffer.byteLength(body),
+      },
+    }, res=>{
+      let d = "";
+      res.on("data", c=> d += c);
+      res.on("end", ()=>{
+        let j; try{ j = JSON.parse(d); }catch{ return resolve({ ok:false, error:"bad JSON from Prometheux" }); }
+        if(res.statusCode !== 200 || j.status !== "success"){
+          return resolve({ ok:false, error:(j && j.message) || ("HTTP " + res.statusCode), raw:j });
+        }
+        const ev   = (j.data && j.data.evaluation_results) || {};
+        const cols = (ev.columnNames && ev.columnNames.contaminated_path) || [];
+        const rows = (ev.resultSet  && ev.resultSet.contaminated_path)  || [];
+        resolve({ ok:true, elapsedMs: Date.now()-t0, serverElapsedMs: ev.elapsedTimeMs, columns:cols, rows });
+      });
+    });
+    req.on("error", e=> resolve({ ok:false, error:e.message }));
+    req.setTimeout(60000, ()=>{ req.destroy(); resolve({ ok:false, error:"Prometheux timed out (60s)" }); });
+    req.write(body); req.end();
+  });
+}
+
 /* ---- static file serving ------------------------------------------- */
 const MIME = { ".html":"text/html", ".csv":"text/csv", ".js":"text/javascript",
                ".css":"text/css", ".md":"text/markdown" };
@@ -383,6 +429,16 @@ http.createServer(async (req, res)=>{
       res.writeHead(code, {"Content-Type":"application/json"});
       res.end(JSON.stringify({ error: err.message }));
     }
+    return;
+  }
+
+  if(url === "/api/prometheux"){
+    const r = await runConcept();
+    console.log(r.ok
+      ? `🧠 Prometheux ran: ${r.rows.length} row(s) in ${r.elapsedMs}ms`
+      : `⚠️  Prometheux call failed: ${r.error}`);
+    res.writeHead(200, { "Content-Type":"application/json" });
+    res.end(JSON.stringify(r));
     return;
   }
 

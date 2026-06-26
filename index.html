@@ -83,6 +83,14 @@
   }
   .banner .src{display:block;margin-top:6px;font-size:11px;color:var(--muted)}
 
+  /* Staged Prometheux progress — makes the ~20s wait feel like visible work */
+  .stages{margin-top:10px; display:flex; flex-direction:column; gap:6px;}
+  .stage{font-size:13px; color:var(--muted); font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    transition:color .2s;}
+  .stage.active{color:var(--ink);}
+  .stage.done{color:var(--green);}
+  .stage .dots::after{content:""; animation:dots 1.2s steps(4,end) infinite;}
+
   /* Sources (Tavily citations) ------------------------------------- */
   .sources{margin:8px 24px; padding:14px 16px; border-radius:10px;
     background:var(--panel); border:1px solid var(--line);}
@@ -255,6 +263,18 @@ const DEMO_PACKAGES = parseCSV(PACKAGES_CSV).map(p=>({name:p.name, license:p.lic
 const DEMO_DEPS     = parseCSV(DEPENDENCIES_CSV).map(d=>({parent:d.parent, child:d.child}));
 function loadDemoGraph(){ truncationNote=null; setGraph(DEMO_PACKAGES, DEMO_DEPS, "gatsby"); }
 
+// License hints for coloring nodes when we render Prometheux results directly
+// (the concept returns package names + paths, not licenses). Covers the demo
+// (gatsby) and the sample (PaySwift) datasets.
+const SAMPLE_PACKAGES = [
+  {name:"PaySwift",license:"Proprietary"}, {name:"web-core",license:"MIT"},
+  {name:"auth-kit",license:"MIT"}, {name:"data-layer",license:"Apache-2.0"},
+  {name:"http-engine",license:"MIT"}, {name:"stream-parser",license:"MIT"},
+  {name:"fast-xml",license:"GPL-3.0"}, {name:"token-utils",license:"MIT"},
+];
+const LICENSE_HINTS = {};
+[...DEMO_PACKAGES, ...SAMPLE_PACKAGES].forEach(p=> LICENSE_HINTS[p.name] = p.license);
+
 /* A license is "copyleft" if it mentions GPL (covers GPL/AGPL/LGPL). */
 function isCopyleft(license){ return /GPL/i.test(license || ""); }
 
@@ -391,9 +411,11 @@ function render(result){
   const pathText = result.contaminated
     ? result.path.map(p=>`${p.name} (${p.license})`).join("  →  ")
     : "";
-  const srcLabel = result.__npm   ? "live scan · deps.dev"
-                 : result.__live  ? "live re-derive (embedded data)"
-                 :                   "Prometheux API (stubbed)";
+  const srcLabel = result.__pmtx     ? `✓ Reasoned live by Prometheux (${(result.__elapsed/1000).toFixed(1)}s)`
+                 : result.__fallback ? "⚠ local fallback — Prometheux unavailable"
+                 : result.__npm      ? "live scan · deps.dev"
+                 : result.__live     ? "live re-derive (embedded data)"
+                 :                      "Prometheux API (stubbed)";
   banner.innerHTML =
     `<strong>${result.verdict}</strong>` +
     (pathText ? `<span class="path">${pathText}</span>` : "") +
@@ -533,21 +555,118 @@ function armExample(){
   svg.innerHTML = ""; svg.setAttribute("width", 0); svg.setAttribute("height", 0);
 }
 
-// RUN the example — the canonical contaminated demo (stubbed Prometheux
-// result + Tavily citations + cited.md + ClickHouse). Triggered by Scan.
+// ---- staged progress animation (makes the ~20s reasoning feel like work) --
+const STAGES = [
+  "Sending dependency graph to Prometheux",
+  "Running recursive reachability",
+  "Tracing contamination paths",
+];
+let stageTimer = null;
+function startStagedProgress(){
+  const t0 = Date.now();
+  function paint(){
+    const secs = Math.floor((Date.now()-t0)/1000);
+    const e = (Date.now()-t0)/1000;
+    const at = e > 8 ? 2 : e > 3 ? 1 : 0;   // advance through the three stages
+    const items = STAGES.map((s,i)=>
+      i <  at ? `<div class="stage done">✓ ${s}</div>` :
+      i === at ? `<div class="stage active">▸ ${s}<span class="dots"></span></div>` :
+                 `<div class="stage">• ${s}</div>`
+    ).join("");
+    banner.className = "banner clean";
+    banner.innerHTML = `<strong>Reasoning live with Prometheux… ${secs}s</strong>` +
+                       `<div class="stages">${items}</div>`;
+  }
+  paint();
+  stageTimer = setInterval(paint, 500);
+}
+function stopStagedProgress(){ if(stageTimer){ clearInterval(stageTimer); stageTimer = null; } }
+
+// ---- call our server (which calls Prometheux), with an abort timeout -------
+async function fetchPrometheux(){
+  const ctrl = new AbortController();
+  const to = setTimeout(()=>ctrl.abort(), 45000);   // hard cap → triggers fallback
+  try{
+    const res = await fetch("/api/prometheux", { signal: ctrl.signal });
+    return await res.json();
+  }finally{ clearTimeout(to); }
+}
+
+// ---- turn the Prometheux resultSet into the UI's result shape -------------
+// Rows are [Package, CopyleftPkg, Path]; the longest Path is root→copyleft.
+function buildResultFromPrometheux(data){
+  const rows = data.rows;
+  const splitPath = s => s.split(/\s*->\s*/).filter(Boolean);
+  // longest path = the full chain from the root down to the copyleft package
+  let longest = [];
+  rows.forEach(r=>{ const p = splitPath(r[2]); if(p.length > longest.length) longest = p; });
+  const copyleftPkg = rows[0][1];
+
+  // do the returned nodes already exist in the displayed (embedded) graph?
+  const allKnown = longest.every(n => licenses[n] !== undefined);
+
+  if(!allKnown){
+    // reconstruct the graph straight from the returned paths (e.g. sample data)
+    const edgeSet = new Set(), nodes = new Set();
+    rows.forEach(r=>{
+      const p = splitPath(r[2]);
+      p.forEach(n=> nodes.add(n));
+      for(let i=0;i<p.length-1;i++) edgeSet.add(p[i] + ">" + p[i+1]);
+    });
+    const packages = [...nodes].map(n=>({ name:n, license: LICENSE_HINTS[n] || "unknown" }));
+    const dependencies = [...edgeSet].map(k=>{ const [parent,child]=k.split(">"); return {parent,child}; });
+    setGraph(packages, dependencies, longest[0]);
+  }
+  const licOf = n => licenses[n] || LICENSE_HINTS[n] || "unknown";
+  const last = longest[longest.length-1];
+  return {
+    contaminated: true,
+    path: longest.map(n=>({ name:n, license: licOf(n) })),
+    verdict: `⚠️ ${longest[0]} is legally exposed — a ${licOf(copyleftPkg)} dependency ` +
+             `(${copyleftPkg}) is reachable via this path.`,
+    reason: `Prometheux proved a copyleft (${licOf(copyleftPkg)}) package is reachable from ${longest[0]}.`,
+  };
+}
+
+// RUN the example LIVE through Prometheux. Falls back to the local engine if
+// the API fails / times out / compute is asleep — the demo never hard-fails.
 async function runExample(){
   exampleBtn.disabled = scanBtn.disabled = true;
   const orig = scanBtn.textContent;
-  scanBtn.textContent = "Scanning…";
-  loadDemoGraph();                  // embedded data (in case the toggle changed it)
+  scanBtn.textContent = "Reasoning…";
+  loadDemoGraph();                     // baseline embedded graph
   licenses["smartwrap"] = swSelect.value || "GPL-2.0";
-  showDemoToggle(true);             // now the smartwrap toggle is relevant
-  banner.className = "banner clean";
-  banner.innerHTML = "<strong>Scanning dependency tree…</strong>";
+  showDemoToggle(false);
+  sourcesBox.style.display = "none";
+  svg.innerHTML = ""; svg.setAttribute("width",0); svg.setAttribute("height",0);
+  startStagedProgress();
 
-  const result = await getContaminationResult("gatsby");
+  let result, source;
+  try{
+    const data = await fetchPrometheux();
+    if(!data || !data.ok || !data.rows || !data.rows.length){
+      throw new Error(data && data.error ? data.error : "no reasoning rows returned");
+    }
+    result = buildResultFromPrometheux(data);
+    result.__pmtx = true;
+    result.__elapsed = data.elapsedMs;
+    source = "prometheux";
+  }catch(err){
+    // never hard-fail: fall back to the local reachability engine on gatsby
+    console.warn("[contamination] Prometheux failed → local fallback:", err.message);
+    loadDemoGraph();
+    licenses["smartwrap"] = swSelect.value || "GPL-2.0";
+    result = deriveContamination("gatsby");
+    result.__fallback = true;
+    source = "local-fallback";
+  }finally{
+    stopStagedProgress();
+  }
+  console.log("[contamination] source:", source);
+
   render(result);
-  fetchSources();   // alongside the result — load real citations (own loading state)
+  showDemoToggle("smartwrap" in licenses);   // toggle only when smartwrap is in view
+  fetchSources();                            // Tavily citations alongside
 
   scanBtn.textContent = orig;
   exampleBtn.disabled = scanBtn.disabled = false;
