@@ -33,6 +33,9 @@
     cursor:pointer; white-space:nowrap; flex:none;
   }
   .example-cta:hover{background:var(--green); color:#04210f;}
+  /* "Back to normal" state — neutral, reads as a return action */
+  .example-cta.is-back{background:rgba(138,151,173,.12); color:var(--ink); border-color:var(--line);}
+  .example-cta.is-back:hover{background:var(--line); color:#fff;}
   .controls-hint{color:var(--muted); font-size:12px;}
   input::placeholder{color:#5b6577;}
 
@@ -518,7 +521,6 @@ function showDemoToggle(show){ demoToggle.style.display = show ? "flex" : "none"
 // with smartwrap = GPL-2.0 so the red path is the headline every time.
 async function loadExample(){
   exampleBtn.disabled = scanBtn.disabled = true;
-  const original = exampleBtn.textContent;
   exampleBtn.textContent = "Loading…";
   loadDemoGraph();                  // the embedded gatsby tree (pristine demo)
   rootInput.value = "gatsby";       // reflect the loaded example in the search bar
@@ -532,10 +534,19 @@ async function loadExample(){
   render(result);
   fetchSources();   // alongside the result — load real citations (own loading state)
 
-  exampleBtn.textContent = original;
+  setExampleButton(true);   // in the example now → button offers "Back to normal"
   exampleBtn.disabled = scanBtn.disabled = false;
 }
-exampleBtn.addEventListener("click", loadExample);
+
+// The header button is context-aware: it loads the example in the normal
+// view, and becomes "← Back to normal" while the example is showing.
+let inExample = false;
+function setExampleButton(on){
+  inExample = on;
+  exampleBtn.innerHTML = on ? "←&nbsp; Back to normal" : "▶&nbsp; Example: Gatsby case";
+  exampleBtn.classList.toggle("is-back", on);
+}
+exampleBtn.addEventListener("click", ()=>{ inExample ? showInitialState() : loadExample(); });
 
 /* -----------------------------------------------------------------------
    LIVE npm MODE — scans any real npm package via the server (/api/scan),
@@ -555,6 +566,7 @@ async function scanNpm(){
   const original = scanBtn.textContent;
   sourcesBox.style.display = "none";   // live mode doesn't fetch Tavily citations
   showDemoToggle(false);               // not the Gatsby demo → hide the toggle
+  setExampleButton(false);             // leaving the example → offer it again
 
   banner.className = "banner clean";
   banner.innerHTML = `<strong>Resolving ${name} from deps.dev…</strong>`;
@@ -613,6 +625,7 @@ swSelect.addEventListener("change", ()=>{
 function showInitialState(){
   rootInput.value = "";
   showDemoToggle(false);
+  setExampleButton(false);   // normal view → button offers the example
   sourcesBox.style.display = "none";
   banner.className = "banner clean";
   banner.innerHTML =
