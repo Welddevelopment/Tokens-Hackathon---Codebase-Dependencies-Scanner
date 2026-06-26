@@ -14,6 +14,8 @@ const http  = require("http");
 const https = require("https");
 const fs    = require("fs");
 const path  = require("path");
+const express = require("express");
+const { paymentMiddleware } = require("x402-express");
 
 const PORT = process.env.PORT || 3000;
 
@@ -513,7 +515,7 @@ function serveFile(res, file){
 }
 
 /* ---- routes -------------------------------------------------------- */
-http.createServer(async (req, res)=>{
+async function rawHandler(req, res){
   const url = req.url.split("?")[0];
 
   if(url === "/api/scan"){
@@ -646,7 +648,44 @@ http.createServer(async (req, res)=>{
     return serveFile(res, safe);
   }
   res.writeHead(404); res.end("Not found");
-}).listen(PORT, ()=>{
+}
+
+/* =======================================================================
+   Express wrapper — adds a REAL x402-paid unlock at GET /api/report, and
+   delegates every other route to the existing zero-dep handler unchanged.
+   x402: returns HTTP 402 Payment Required with real Base Sepolia payment
+   requirements when unpaid; serves cited.md on a verified payment. The
+   dev-password unlock (/api/unlock) stays as the alternate path.
+======================================================================= */
+const app = express();
+const PAY_TO = process.env.X402_PAY_TO;
+
+if(PAY_TO){
+  // facilitator omitted → x402-express defaults to x402.org/facilitator (testnet)
+  app.use(paymentMiddleware(
+    PAY_TO,
+    { "GET /api/report": {
+        price: process.env.X402_PRICE || "$0.01",
+        network: process.env.X402_NETWORK || "base-sepolia",
+        config: { description: "Full cited license-contamination report (cited.md)" },
+    }},
+  ));
+  // reached only after the middleware verifies payment
+  app.get("/api/report", (req, res)=>{
+    let report;
+    try{ report = fs.readFileSync(path.join(__dirname, "cited.md"), "utf8"); }
+    catch{ return res.status(404).json({ ok:false, error:"No report yet — run a scan first" }); }
+    res.json({ ok:true, report, paid:true });
+  });
+}else{
+  console.log("ℹ️  X402_PAY_TO not set — x402 paid unlock (GET /api/report) disabled");
+}
+
+// everything else → the existing handler (static files + all other /api routes)
+app.use((req, res)=> rawHandler(req, res));
+
+app.listen(PORT, ()=>{
   console.log(`License Contamination Scanner running → http://localhost:${PORT}`);
   if(!process.env.TAVILY_API_KEY) console.log("⚠️  TAVILY_API_KEY not set — /api/sources will error. Add it to .env");
+  if(PAY_TO) console.log(`💳 x402 paid unlock active: GET /api/report → payTo ${PAY_TO.slice(0,10)}… on ${process.env.X402_NETWORK||"base-sepolia"}`);
 });

@@ -5,5 +5,9 @@
   "description": "Detects hidden GPL/copyleft contamination in a dependency tree and proves the path.",
   "scripts": {
     "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "x402-express": "^1.2.0"
   }
 }
