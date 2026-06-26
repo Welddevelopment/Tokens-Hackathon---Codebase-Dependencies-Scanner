@@ -317,8 +317,19 @@ const SAMPLE_PACKAGES = [
 const LICENSE_HINTS = {};
 [...DEMO_PACKAGES, ...SAMPLE_PACKAGES].forEach(p=> LICENSE_HINTS[p.name] = p.license);
 
-/* A license is "copyleft" if it mentions GPL (covers GPL/AGPL/LGPL). */
-function isCopyleft(license){ return /GPL/i.test(license || ""); }
+/* Contaminating copyleft — STRICT, to match Prometheux's reasoning:
+   flag only a single, unavoidable GPL/AGPL license. Excludes
+     - dual / multi-licensed expressions  ("BSD-3-Clause OR GPL-2.0") — you can
+       take the permissive option, so no obligation;
+     - "-or-later" variants               ("GPL-3.0-or-later");
+     - LGPL                                ("LGPL-2.1+").
+   So "GPL-2.0" / "GPL-3.0" / "AGPL-3.0" flag; node-forge's dual license does not. */
+function isCopyleft(license){
+  const l = (license || "").trim();
+  if(!l) return false;
+  if(/\bor\b/i.test(l)) return false;     // dual option, or "-or-later"
+  return /\b(?:A)?GPL-/i.test(l);         // single GPL / AGPL only (not LGPL)
+}
 
 /* =======================================================================
    2. THE STUB  ←←←  REPLACE THIS WITH THE REAL PROMETHEUX API CALL LATER
