@@ -413,7 +413,7 @@ function render(result){
     : "";
   const srcLabel = result.__pmtx     ? `✓ Reasoned live by Prometheux (${(result.__elapsed/1000).toFixed(1)}s)`
                  : result.__fallback ? "⚠ local fallback — Prometheux unavailable"
-                 : result.__npm      ? "live scan · deps.dev"
+                 : result.__npm      ? "Fast scan · deps.dev"
                  : result.__live     ? "live re-derive (embedded data)"
                  :                      "Prometheux API (stubbed)";
   banner.innerHTML =
@@ -555,30 +555,38 @@ function armExample(){
   svg.innerHTML = ""; svg.setAttribute("width", 0); svg.setAttribute("height", 0);
 }
 
-// ---- staged progress animation (makes the ~20s reasoning feel like work) --
-const STAGES = [
+// ---- staged progress animation — makes a wait feel like deliberate work ----
+// Generic engine: a title, the stage labels, and the elapsed-seconds
+// thresholds at which to advance. Used by both the live Prometheux example
+// (slow, ~20s) and the fast deps.dev scan (sub-second thresholds).
+const PMTX_STAGES = [
   "Sending dependency graph to Prometheux",
   "Running recursive reachability",
   "Tracing contamination paths",
 ];
+const NPM_STAGES = [
+  "Fetching dependency tree from deps.dev",
+  "Tracing license reachability",
+  "Checking for copyleft contamination",
+];
 let stageTimer = null;
-function startStagedProgress(){
+function startStages(title, stages, advanceAt){
   const t0 = Date.now();
   function paint(){
-    const secs = Math.floor((Date.now()-t0)/1000);
     const e = (Date.now()-t0)/1000;
-    const at = e > 8 ? 2 : e > 3 ? 1 : 0;   // advance through the three stages
-    const items = STAGES.map((s,i)=>
+    const secs = Math.floor(e);
+    let at = 0; advanceAt.forEach((th,i)=>{ if(e > th) at = i + 1; });
+    at = Math.min(at, stages.length - 1);
+    const items = stages.map((s,i)=>
       i <  at ? `<div class="stage done">✓ ${s}</div>` :
       i === at ? `<div class="stage active">▸ ${s}<span class="dots"></span></div>` :
                  `<div class="stage">• ${s}</div>`
     ).join("");
     banner.className = "banner clean";
-    banner.innerHTML = `<strong>Reasoning live with Prometheux… ${secs}s</strong>` +
-                       `<div class="stages">${items}</div>`;
+    banner.innerHTML = `<strong>${title} ${secs}s</strong><div class="stages">${items}</div>`;
   }
   paint();
-  stageTimer = setInterval(paint, 500);
+  stageTimer = setInterval(paint, 400);
 }
 function stopStagedProgress(){ if(stageTimer){ clearInterval(stageTimer); stageTimer = null; } }
 
@@ -639,7 +647,7 @@ async function runExample(){
   showDemoToggle(false);
   sourcesBox.style.display = "none";
   svg.innerHTML = ""; svg.setAttribute("width",0); svg.setAttribute("height",0);
-  startStagedProgress();
+  startStages("Reasoning live with Prometheux…", PMTX_STAGES, [3, 8]);
 
   let result, source;
   try{
@@ -698,20 +706,17 @@ async function scanNpm(){
   }
   scanBtn.disabled = exampleBtn.disabled = true;
   const original = scanBtn.textContent;
+  scanBtn.textContent = "Scanning…";
   sourcesBox.style.display = "none";   // live mode doesn't fetch Tavily citations
   showDemoToggle(false);               // not the Gatsby demo → hide the toggle
   setExampleButton(false);             // leaving the example → offer it again
-
-  banner.className = "banner clean";
-  banner.innerHTML = `<strong>Resolving ${name} from deps.dev…</strong>`;
-  scanBtn.textContent = "Scanning…";
+  svg.innerHTML = ""; svg.setAttribute("width",0); svg.setAttribute("height",0);
+  startStages("Scanning npm package…", NPM_STAGES, [0.7, 1.6]);
 
   try{
     const res = await fetch("/api/scan?package=" + encodeURIComponent(name));
     const data = await res.json();
     if(!res.ok) throw new Error(data.error || ("HTTP " + res.status));
-
-    banner.innerHTML = `<strong>Tracing licenses across ${data.shown} packages…</strong>`;
 
     // load the live tree into the shared graph state, then run the EXISTING
     // contamination logic over it.
@@ -725,8 +730,10 @@ async function scanNpm(){
       result.verdict = "✅ No contamination found — clean tree";
     }
     result.__npm = true;
+    stopStagedProgress();
     render(result);
   }catch(err){
+    stopStagedProgress();
     truncationNote = null;
     banner.className = "banner contaminated";
     banner.innerHTML =
@@ -734,6 +741,7 @@ async function scanNpm(){
       `<span class="src">${err.message}. Try an exact npm package name (e.g. gatsby, express, eslint). ` +
       `Live mode needs the server running — open http://localhost:3000.</span>`;
   }finally{
+    stopStagedProgress();
     scanBtn.textContent = original;
     scanBtn.disabled = exampleBtn.disabled = false;
   }
