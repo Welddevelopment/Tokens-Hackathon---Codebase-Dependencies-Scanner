@@ -108,6 +108,36 @@
   .sources li a:hover{text-decoration:underline;}
   .sources li .missing{color:var(--muted); font-style:italic;}
 
+  /* Cited report panel (paywalled) -------------------------------- */
+  .sources .rep-title{font-size:13px; font-weight:700; letter-spacing:.3px;
+    text-transform:uppercase; color:var(--muted); margin-bottom:10px;}
+  .rep-badge{color:var(--green); font-weight:600; text-transform:none; letter-spacing:0; margin-left:8px;}
+  .rep-lockline{font-size:14px; color:var(--ink); font-weight:600;}
+  .rep-teaser{font-size:13px; color:var(--muted); margin:8px 0 12px; line-height:1.5;}
+  .rep-actions{display:flex; gap:10px; align-items:center; flex-wrap:wrap;}
+  .rep-unlock{background:var(--root); color:#fff; border:0; padding:9px 16px;
+    border-radius:8px; font-size:14px; font-weight:600; cursor:pointer;}
+  .rep-unlock:hover{filter:brightness(1.1);}
+  .rep-pay{background:transparent; color:var(--muted); border:1px dashed var(--line);
+    padding:9px 14px; border-radius:8px; font-size:13px; cursor:not-allowed;}
+  .rep-prompt{display:flex; gap:8px; align-items:center; margin-top:12px; flex-wrap:wrap;}
+  .rep-prompt input{background:var(--bg); border:1px solid var(--line); color:var(--ink);
+    padding:8px 10px; border-radius:6px; font-size:13px;}
+  .rep-prompt button{background:var(--green); color:#04210f; border:0; padding:8px 14px;
+    border-radius:6px; font-weight:600; cursor:pointer;}
+  .rep-msg{font-size:12px; color:var(--muted);}
+  .rep-msg.err{color:#fca5a5;}
+  .rep-body{font-size:14px; line-height:1.6; color:var(--ink);}
+  .rep-body h2{font-size:18px; margin:4px 0 12px;}
+  .rep-body h3{font-size:12px; text-transform:uppercase; letter-spacing:.3px;
+    color:var(--muted); margin:16px 0 6px;}
+  .rep-body ul{margin:6px 0; padding-left:20px;}
+  .rep-body li{margin:6px 0; word-break:break-word;}
+  .rep-body a{color:var(--root); text-decoration:none; word-break:break-all;}
+  .rep-body a:hover{text-decoration:underline;}
+  .rep-body code{background:var(--bg); padding:1px 5px; border-radius:4px;}
+  .rep-body p{margin:8px 0;}
+
   /* Graph ----------------------------------------------------------- */
   .graphwrap{overflow:auto; padding:8px 24px 24px;}
   svg{display:block;}
@@ -161,8 +191,8 @@
 
   <div id="banner" class="banner clean">Loading…</div>
 
-  <!-- Tavily-sourced citations for the contamination finding. Populated on
-       each scan; kept in window.__sources for cited.md next. -->
+  <!-- Paywalled cited-report panel: shows a locked state on contamination;
+       the full cited.md is revealed via /api/unlock (dev password / x402). -->
   <div id="sources" class="sources" style="display:none"></div>
 
   <div class="legend">
@@ -481,35 +511,123 @@ function render(result){
 }
 
 /* =======================================================================
-   5b. SOURCES (Tavily citations)
-   On each scan we ask the backend (/api/sources) to run 3 real Tavily
-   searches and return the top result URL for each. Stored in
-   window.__sources so the next step can write them into cited.md.
-   This is citation sourcing — exactly 3 searches, not a research loop.
+   5b. CITED REPORT — paywalled.
+   On a contaminated scan the backend runs Tavily + writes cited.md, but the
+   report content stays server-side. The browser only learns it's READY and
+   shows a locked panel; the full cited report is revealed via /api/unlock
+   (dev password) — or, later, an agent payment (x402). Free: graph + verdict
+   + path. Locked: the full cited.md (why-it-matters + sources).
 ======================================================================= */
-const sourcesBox = document.getElementById("sources");
-window.__sources = [];
+const sourcesBox = document.getElementById("sources");   // the cited-report panel
 
-function renderSources(sources){
-  const items = sources.map(s=>{
-    if(s.url){
-      return `<li><span class="lbl">${s.label}:</span><br>
-                <a href="${s.url}" target="_blank" rel="noopener">${s.url}</a></li>`;
-    }
-    return `<li><span class="lbl">${s.label}:</span>
-              <span class="missing">no result found${s.error ? " ("+s.error+")" : ""}</span></li>`;
-  }).join("");
-  sourcesBox.innerHTML =
-    `<div class="srcs-title">Sources · verified via Tavily</div><ol>${items}</ol>`;
+// minimal markdown -> HTML for the fixed cited.md format
+function mdToHtml(md){
+  const esc = s => s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  const inline = s => esc(s)
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m,t,u)=>`<a href="${u.replace(/"/g,"&quot;")}" target="_blank" rel="noopener">${t}</a>`)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  const out = []; let inList = false;
+  const closeList = ()=>{ if(inList){ out.push("</ul>"); inList = false; } };
+  md.split(/\r?\n/).forEach(ln=>{
+    if(/^### /.test(ln)){ closeList(); out.push("<h4>"+inline(ln.slice(4))+"</h4>"); }
+    else if(/^## /.test(ln)){ closeList(); out.push("<h3>"+inline(ln.slice(3))+"</h3>"); }
+    else if(/^# /.test(ln)){ closeList(); out.push("<h2>"+inline(ln.slice(2))+"</h2>"); }
+    else if(/^- /.test(ln)){ if(!inList){ out.push("<ul>"); inList = true; } out.push("<li>"+inline(ln.slice(2))+"</li>"); }
+    else if(ln.trim()===""){ closeList(); }
+    else { closeList(); out.push("<p>"+inline(ln)+"</p>"); }
+  });
+  closeList();
+  return out.join("\n");
 }
 
-// Live-scan citations: only when a deps.dev scan FINDS contamination. Runs
-// 2 Tavily searches server-side (npm page + SPDX) and writes cited.md.
-async function fetchLiveSources(pkg, copyleftPkg, license, pathStr){
+function showReportPreparing(){
   sourcesBox.style.display = "block";
   sourcesBox.innerHTML =
-    `<div class="srcs-title">Sources · verified via Tavily</div>
-     <div class="srcs-loading">🔎 Fetching real sources<span class="dots"></span></div>`;
+    `<div class="rep-title">Cited report</div>
+     <div class="srcs-loading">🔎 Preparing cited report<span class="dots"></span></div>`;
+}
+
+function showReportLocked(count){
+  sourcesBox.style.display = "block";
+  sourcesBox.innerHTML = `
+    <div class="rep-title">Cited report</div>
+    <div class="rep-lockline">🔒 Full cited report ready — ${count} source${count===1?"":"s"} cited, verified via Tavily.</div>
+    <div class="rep-teaser">The verdict and contamination path above are free. Unlock the full report to reveal why it matters and the cited sources.</div>
+    <div class="rep-actions">
+      <button id="unlockBtn" class="rep-unlock">Unlock full report</button>
+      <button id="payBtn" class="rep-pay" disabled title="Planned: autonomous agent payment via x402 / agentic.market">Agent payment (x402) — coming soon</button>
+    </div>
+    <div id="unlockArea"></div>`;
+  sourcesBox.querySelector("#unlockBtn").addEventListener("click", showUnlockPrompt);
+  sourcesBox.querySelector("#payBtn").addEventListener("click", unlockViaPayment);
+}
+
+function showUnlockPrompt(){
+  const area = sourcesBox.querySelector("#unlockArea");
+  area.innerHTML = `
+    <div class="rep-prompt">
+      <input id="unlockPw" type="password" placeholder="Dev unlock password" autocomplete="off" />
+      <button id="unlockGo">Unlock</button>
+      <span id="unlockMsg" class="rep-msg"></span>
+    </div>`;
+  const pw = area.querySelector("#unlockPw");
+  pw.focus();
+  area.querySelector("#unlockGo").addEventListener("click", ()=> doUnlock(pw.value));
+  pw.addEventListener("keydown", e=>{ if(e.key === "Enter") doUnlock(pw.value); });
+}
+
+async function doUnlock(password){
+  const msg = sourcesBox.querySelector("#unlockMsg");
+  if(msg){ msg.textContent = "checking…"; msg.className = "rep-msg"; }
+  try{
+    const res = await fetch("/api/unlock", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ password }),
+    });
+    const data = await res.json();
+    if(!data.ok) throw new Error(data.error || "Incorrect password");
+    showReportUnlocked(data.report);
+  }catch(err){
+    if(msg){ msg.textContent = err.message; msg.className = "rep-msg err"; }
+  }
+}
+
+function showReportUnlocked(report){
+  sourcesBox.style.display = "block";
+  sourcesBox.innerHTML =
+    `<div class="rep-title">Cited report <span class="rep-badge">✓ Unlocked</span></div>
+     <div class="rep-body">${mdToHtml(report)}</div>`;
+}
+
+// SEAM: a real autonomous-agent payment rail (x402 / agentic.market) will
+// trigger the SAME unlock as the dev password. When wired: the client hits a
+// 402-challenged endpoint, the agent pays, the server verifies the payment
+// proof, then returns the cited report (identical to /api/unlock's body).
+// Stubbed for now — the dev-password unlock is the working demo path.
+async function unlockViaPayment(){
+  // TODO: integrate x402 / agentic.market, then reveal via showReportUnlocked().
+}
+
+// Prepare the (locked) report for the Gatsby example — 3 Tavily searches.
+async function fetchSources(){
+  showReportPreparing();
+  try{
+    const res = await fetch("/api/sources");
+    const data = await res.json();
+    if(!res.ok || data.error) throw new Error(data.error || ("HTTP " + res.status));
+    showReportLocked(data.count || 0);
+  }catch(err){
+    sourcesBox.innerHTML =
+      `<div class="rep-title">Cited report</div>
+       <div class="srcs-error">Could not prepare report: ${err.message}.<br>
+       Run via <code>node server.js</code> with <code>TAVILY_API_KEY</code> set.</div>`;
+  }
+}
+
+// Prepare the (locked) report for a live scan that found contamination.
+async function fetchLiveSources(pkg, copyleftPkg, license, pathStr){
+  showReportPreparing();
   try{
     const res = await fetch("/api/scan-sources", {
       method:"POST", headers:{ "Content-Type":"application/json" },
@@ -517,35 +635,11 @@ async function fetchLiveSources(pkg, copyleftPkg, license, pathStr){
     });
     const data = await res.json();
     if(data.error) throw new Error(data.error);
-    window.__sources = data.sources;
-    renderSources(data.sources);
+    showReportLocked(data.count || 0);
   }catch(err){
     sourcesBox.innerHTML =
-      `<div class="srcs-title">Sources · verified via Tavily</div>
-       <div class="srcs-error">Could not fetch sources: ${err.message}.</div>`;
-  }
-}
-
-async function fetchSources(){
-  sourcesBox.style.display = "block";
-  sourcesBox.innerHTML =
-    `<div class="srcs-title">Sources · verified via Tavily</div>
-     <div class="srcs-loading">🔎 Fetching real sources<span class="dots"></span></div>`;
-  try{
-    const res = await fetch("/api/sources");
-    if(!res.ok){
-      const e = await res.json().catch(()=>({}));
-      throw new Error(e.error || ("HTTP " + res.status));
-    }
-    const data = await res.json();
-    window.__sources = data.sources;     // stored for cited.md next
-    renderSources(data.sources);
-  }catch(err){
-    sourcesBox.innerHTML =
-      `<div class="srcs-title">Sources · verified via Tavily</div>
-       <div class="srcs-error">Could not fetch sources: ${err.message}.<br>
-       Run the app with <code>node server.js</code> and set <code>TAVILY_API_KEY</code>
-       in <code>.env</code> — Tavily runs on the backend so the key stays secret.</div>`;
+      `<div class="rep-title">Cited report</div>
+       <div class="srcs-error">Could not prepare report: ${err.message}.</div>`;
   }
 }
 

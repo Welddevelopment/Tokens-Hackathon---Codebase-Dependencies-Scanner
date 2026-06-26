@@ -500,6 +500,32 @@ http.createServer(async (req, res)=>{
     return;
   }
 
+  if(url === "/api/unlock" && req.method === "POST"){
+    // PAYWALL unlock: returns the full cited.md ONLY on the correct dev
+    // password. The report never leaves the server otherwise.
+    const b = await readJsonBody(req);
+    const expected = process.env.DEV_UNLOCK_PASSWORD;
+    const json = { "Content-Type":"application/json" };
+    if(!expected){
+      res.writeHead(200, json);
+      return res.end(JSON.stringify({ ok:false, error:"Unlock not configured — set DEV_UNLOCK_PASSWORD in .env" }));
+    }
+    if(!b.password || b.password !== expected){
+      res.writeHead(200, json);
+      return res.end(JSON.stringify({ ok:false, error:"Incorrect password" }));
+    }
+    let report;
+    try{ report = fs.readFileSync(path.join(__dirname, "cited.md"), "utf8"); }
+    catch{
+      res.writeHead(200, json);
+      return res.end(JSON.stringify({ ok:false, error:"No report yet — run a scan that finds contamination first" }));
+    }
+    console.log("🔓 report unlocked (dev password)");
+    res.writeHead(200, json);
+    res.end(JSON.stringify({ ok:true, report }));
+    return;
+  }
+
   if(url === "/api/scan-sources" && req.method === "POST"){
     const b = await readJsonBody(req);
     const license = b.license || "GPL";
@@ -508,8 +534,9 @@ http.createServer(async (req, res)=>{
     try{
       const sources = await getLiveSources(b.copyleftPkg, spdxId);
       writeLiveCitedReport(b.package, b.copyleftPkg, spdxId, b.path, sources);
+      // PAYWALL: gated — only signal readiness, not the source URLs.
       res.writeHead(200, { "Content-Type":"application/json" });
-      res.end(JSON.stringify({ sources }));
+      res.end(JSON.stringify({ ready:true, count: sources.length }));
     }catch(err){
       res.writeHead(200, { "Content-Type":"application/json" });
       res.end(JSON.stringify({ error: err.message }));
@@ -528,8 +555,10 @@ http.createServer(async (req, res)=>{
         copyleft: "smartwrap",
         path: "gatsby → gatsby-recipes → graphql-tools-schema → value-or-promise → to-readable-stream → smartwrap",
       });
+      // PAYWALL: report is written to cited.md but NOT returned here — the
+      // client only learns it's ready. Full content comes via /api/unlock.
       res.writeHead(200, { "Content-Type":"application/json" });
-      res.end(JSON.stringify({ sources }));
+      res.end(JSON.stringify({ ready:true, count: sources.length }));
     }catch(err){
       res.writeHead(500, { "Content-Type":"application/json" });
       res.end(JSON.stringify({ error: err.message }));
