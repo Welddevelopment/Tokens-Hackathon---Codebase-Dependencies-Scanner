@@ -120,6 +120,18 @@
   .rep-unlock:hover{filter:brightness(1.1);}
   .rep-pay{background:transparent; color:var(--muted); border:1px dashed var(--line);
     padding:9px 14px; border-radius:8px; font-size:13px; cursor:not-allowed;}
+  /* live x402 agent-payment button (demo-simulated settlement) */
+  .rep-pay-live{background:#7c3aed; color:#fff; border:0; padding:9px 16px;
+    border-radius:8px; font-size:14px; font-weight:600; cursor:pointer;}
+  .rep-pay-live:hover{filter:brightness(1.12);}
+  .rep-pay-live:disabled{opacity:.6; cursor:default;}
+  .pay-flow{margin-top:14px;}
+  .pay-line{font-size:13px; color:var(--ink); display:flex; align-items:center; gap:8px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}
+  .pay-spin{width:12px; height:12px; border:2px solid var(--line); border-top-color:#7c3aed;
+    border-radius:50%; display:inline-block; animation:spin .7s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .pay-tx{color:var(--muted); font-size:12px; word-break:break-all;}
   .rep-prompt{display:flex; gap:8px; align-items:center; margin-top:12px; flex-wrap:wrap;}
   .rep-prompt input{background:var(--bg); border:1px solid var(--line); color:var(--ink);
     padding:8px 10px; border-radius:6px; font-size:13px;}
@@ -555,8 +567,8 @@ function showReportLocked(count){
     <div class="rep-lockline">🔒 Full cited report ready — ${count} source${count===1?"":"s"} cited, verified via Tavily.</div>
     <div class="rep-teaser">The verdict and contamination path above are free. Unlock the full report to reveal why it matters and the cited sources.</div>
     <div class="rep-actions">
-      <button id="unlockBtn" class="rep-unlock">Unlock full report</button>
-      <button id="payBtn" class="rep-pay" disabled title="Planned: autonomous agent payment via x402 / agentic.market">Agent payment (x402) — coming soon</button>
+      <button id="payBtn" class="rep-pay-live" title="Unlock via autonomous agent micropayment (x402)">⚡ Pay with x402</button>
+      <button id="unlockBtn" class="rep-unlock">Unlock with password</button>
     </div>
     <div id="unlockArea"></div>`;
   sourcesBox.querySelector("#unlockBtn").addEventListener("click", showUnlockPrompt);
@@ -600,13 +612,46 @@ function showReportUnlocked(report){
      <div class="rep-body">${mdToHtml(report)}</div>`;
 }
 
-// SEAM: a real autonomous-agent payment rail (x402 / agentic.market) will
-// trigger the SAME unlock as the dev password. When wired: the client hits a
-// 402-challenged endpoint, the agent pays, the server verifies the payment
-// proof, then returns the cited report (identical to /api/unlock's body).
-// Stubbed for now — the dev-password unlock is the working demo path.
+// x402 autonomous-agent payment. DEMO: the settlement is simulated (the
+// server's /api/pay always succeeds and returns the report) so the rail looks
+// live on stage. PRODUCTION SEAM: the client would hit a 402-challenged
+// endpoint, the agent pays, the server verifies the payment proof, then
+// returns the cited report — same body as /api/unlock. The dev-password
+// unlock remains the real gate.
 async function unlockViaPayment(){
-  // TODO: integrate x402 / agentic.market, then reveal via showReportUnlocked().
+  const area = sourcesBox.querySelector("#unlockArea");
+  const payBtn = sourcesBox.querySelector("#payBtn");
+  const unlockBtn = sourcesBox.querySelector("#unlockBtn");
+  if(!area) return;
+  if(payBtn) payBtn.disabled = true;
+  if(unlockBtn) unlockBtn.disabled = true;
+
+  const steps = [
+    "Initiating x402 payment…",
+    "Agent authorizing micropayment ($0.05 USDC)…",
+    "Verifying settlement on-chain…",
+  ];
+  area.innerHTML = `<div class="pay-flow"><div class="pay-line" id="payLine"></div></div>`;
+  const line = area.querySelector("#payLine");
+  for(const s of steps){
+    line.innerHTML = `<span class="pay-spin"></span> ${s}`;
+    await new Promise(r=> setTimeout(r, 750));
+  }
+  try{
+    const res = await fetch("/api/pay", { method:"POST" });
+    const data = await res.json();
+    if(!data.ok) throw new Error(data.error || "payment failed");
+    line.innerHTML = `✓ Payment settled`;
+    if(data.txHash){
+      line.innerHTML += `  <span class="pay-tx">tx ${data.txHash.slice(0,14)}…</span>`;
+    }
+    await new Promise(r=> setTimeout(r, 650));
+    showReportUnlocked(data.report);
+  }catch(err){
+    line.innerHTML = `<span class="rep-msg err">Payment failed: ${err.message}</span>`;
+    if(payBtn) payBtn.disabled = false;
+    if(unlockBtn) unlockBtn.disabled = false;
+  }
 }
 
 // Prepare the (locked) report for the Gatsby example — 3 Tavily searches.

@@ -555,6 +555,24 @@ http.createServer(async (req, res)=>{
     return;
   }
 
+  if(url === "/api/pay" && req.method === "POST"){
+    // DEMO: simulated x402 autonomous-agent micropayment. Always "settles"
+    // and returns the report so the payment rail looks live on stage.
+    // PRODUCTION would verify a real x402 payment proof here before releasing.
+    // The dev-password unlock (/api/unlock) remains the real server-side gate.
+    let report;
+    try{ report = fs.readFileSync(path.join(__dirname, "cited.md"), "utf8"); }
+    catch{
+      res.writeHead(200, { "Content-Type":"application/json" });
+      return res.end(JSON.stringify({ ok:false, error:"No report yet — run a scan first" }));
+    }
+    const txHash = "0x" + require("crypto").randomBytes(20).toString("hex");
+    console.log("💸 simulated x402 payment settled (demo) — report released");
+    res.writeHead(200, { "Content-Type":"application/json" });
+    res.end(JSON.stringify({ ok:true, report, txHash }));
+    return;
+  }
+
   if(url === "/api/unlock" && req.method === "POST"){
     // PAYWALL unlock: returns the full cited.md ONLY on the correct dev
     // password. The report never leaves the server otherwise.
