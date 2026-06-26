@@ -25,6 +25,16 @@
   header{padding:20px 24px 8px;}
   h1{margin:0; font-size:20px; letter-spacing:.2px;}
   .sub{color:var(--muted); font-size:13px; margin-top:4px;}
+  .head-row{display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap;}
+  /* the Gatsby example — clearly visible accent button, the headline demo */
+  .example-cta{
+    background:rgba(34,197,94,.12); color:#86efac; border:1px solid var(--green);
+    padding:10px 16px; border-radius:8px; font-weight:600; font-size:14px;
+    cursor:pointer; white-space:nowrap; flex:none;
+  }
+  .example-cta:hover{background:var(--green); color:#04210f;}
+  .controls-hint{color:var(--muted); font-size:12px;}
+  input::placeholder{color:#5b6577;}
 
   .controls{
     display:flex; gap:10px; align-items:center; flex-wrap:wrap;
@@ -39,16 +49,22 @@
     border-radius:8px; font-size:14px; font-weight:600; cursor:pointer;
   }
   button:disabled{opacity:.6; cursor:default;}
-  .kicker{
-    display:flex; gap:8px; align-items:center; margin-left:auto;
-    background:var(--panel); border:1px solid var(--line);
-    padding:8px 12px; border-radius:8px; font-size:13px;
+  /* Demo-only toggle — subtle caption above the graph, not a header control */
+  .demo-toggle{
+    display:flex; gap:7px; align-items:center; flex-wrap:wrap;
+    margin:0 24px 6px; padding:7px 12px; width:fit-content; max-width:calc(100% - 48px);
+    background:rgba(37,99,235,.06); border:1px dashed var(--line);
+    border-radius:8px; font-size:12.5px; color:var(--muted);
   }
-  .kicker select{
+  .demo-toggle .dot{width:7px;height:7px;border-radius:50%;background:var(--root);
+    box-shadow:0 0 0 3px rgba(37,99,235,.18);}
+  .demo-toggle .lead{color:var(--ink); font-weight:600;}
+  .demo-toggle code{background:var(--bg); padding:1px 5px; border-radius:4px; color:var(--ink);}
+  .demo-toggle select{
     background:var(--bg); color:var(--ink); border:1px solid var(--line);
-    border-radius:6px; padding:6px 8px; font-size:13px;
+    border-radius:6px; padding:3px 6px; font-size:12.5px;
   }
-  .kicker .tag{color:var(--muted)}
+  .demo-toggle .hint{opacity:.85;}
 
   /* Verdict banner -------------------------------------------------- */
   .banner{
@@ -115,25 +131,21 @@
 </head>
 <body>
   <header>
-    <h1>License Contamination Scanner</h1>
-    <div class="sub">Detect hidden GPL/copyleft contamination in a dependency tree and prove the exact path.</div>
+    <div class="head-row">
+      <div class="head-left">
+        <h1>License Contamination Scanner</h1>
+        <div class="sub">Detect hidden GPL/copyleft contamination in a dependency tree and prove the exact path.</div>
+      </div>
+      <!-- The main demo, kept prominent and one click away. -->
+      <button id="exampleBtn" class="example-cta">▶&nbsp; Example: Gatsby case</button>
+    </div>
   </header>
 
   <div class="controls">
-    <input id="rootInput" type="text" value="gatsby" spellcheck="false" />
-    <button id="runBtn">Run scan</button>
-    <!-- live mode: scans any real npm package via deps.dev (server-side) -->
-    <button id="npmBtn" style="background:#0e7d57">Scan live npm →</button>
-
-    <!-- THE KICKER: live license toggle on smartwrap. Runs on the embedded
-         data (not the API), so it works fully right now. -->
-    <label class="kicker">
-      <span class="tag">smartwrap license:</span>
-      <select id="smartwrapLicense">
-        <option value="GPL-2.0" selected>GPL-2.0</option>
-        <option value="MIT">MIT</option>
-      </select>
-    </label>
+    <input id="rootInput" type="text" spellcheck="false"
+           placeholder="Enter an npm package name — e.g. express, eslint, react" />
+    <button id="scanBtn">Scan</button>
+    <span class="controls-hint">Scans live via deps.dev</span>
   </div>
 
   <div id="banner" class="banner clean">Loading…</div>
@@ -146,6 +158,20 @@
     <span><i class="swatch sw-root"></i> root package</span>
     <span><i class="swatch sw-green"></i> permissive (MIT / ISC / Apache)</span>
     <span><i class="swatch sw-red"></i> GPL / copyleft</span>
+  </div>
+
+  <!-- Demo-only interaction: appears only in the Gatsby demo view (hidden in
+       live npm mode). Flipping smartwrap's license re-derives contamination
+       live — the "proof it's reasoning, not a lookup" moment. -->
+  <div id="demoToggle" class="demo-toggle">
+    <span class="dot"></span>
+    <span class="lead">Try it live —</span>
+    <span>flip <code>smartwrap</code>'s license</span>
+    <select id="smartwrapLicense" aria-label="smartwrap license">
+      <option value="GPL-2.0" selected>GPL-2.0</option>
+      <option value="MIT">MIT</option>
+    </select>
+    <span class="hint">and watch the verdict re-derive.</span>
   </div>
 
   <div class="graphwrap"><svg id="graph"></svg></div>
@@ -478,32 +504,38 @@ async function fetchSources(){
 /* =======================================================================
    6. WIRING
 ======================================================================= */
-const runBtn   = document.getElementById("runBtn");
-const npmBtn   = document.getElementById("npmBtn");
-const rootInput= document.getElementById("rootInput");
-const swSelect = document.getElementById("smartwrapLicense");
+const exampleBtn = document.getElementById("exampleBtn");
+const scanBtn    = document.getElementById("scanBtn");
+const rootInput  = document.getElementById("rootInput");
+const swSelect   = document.getElementById("smartwrapLicense");
+const demoToggle = document.getElementById("demoToggle");
 
-// Run = canonical scan through the (stubbed) API. Resets smartwrap to its
-// GPL-2.0 default so the headline contaminated result always matches the
-// stub. The toggle below is for live what-if exploration.
-async function runScan(){
-  runBtn.disabled = true;
-  const original = runBtn.textContent;
-  runBtn.textContent = "Scanning… (Prometheux)";
-  loadDemoGraph();                  // restore the embedded gatsby tree (pristine demo)
+// the toggle only belongs to the Gatsby demo view
+function showDemoToggle(show){ demoToggle.style.display = show ? "flex" : "none"; }
+
+// The Gatsby example — the canonical contaminated demo (stubbed Prometheux
+// result + Tavily citations + cited.md + ClickHouse). Always loads gatsby
+// with smartwrap = GPL-2.0 so the red path is the headline every time.
+async function loadExample(){
+  exampleBtn.disabled = scanBtn.disabled = true;
+  const original = exampleBtn.textContent;
+  exampleBtn.textContent = "Loading…";
+  loadDemoGraph();                  // the embedded gatsby tree (pristine demo)
+  rootInput.value = "gatsby";       // reflect the loaded example in the search bar
   swSelect.value = "GPL-2.0";
   licenses["smartwrap"] = "GPL-2.0";
+  showDemoToggle(true);             // demo view → smartwrap toggle is relevant
   banner.className = "banner clean";
-  banner.innerHTML = "<strong>Scanning dependency tree…</strong>";
+  banner.innerHTML = "<strong>Loading the Gatsby contamination example…</strong>";
 
-  const result = await getContaminationResult(rootInput.value.trim() || "gatsby");
+  const result = await getContaminationResult("gatsby");
   render(result);
   fetchSources();   // alongside the result — load real citations (own loading state)
 
-  runBtn.textContent = original;
-  runBtn.disabled = false;
+  exampleBtn.textContent = original;
+  exampleBtn.disabled = scanBtn.disabled = false;
 }
-runBtn.addEventListener("click", runScan);
+exampleBtn.addEventListener("click", loadExample);
 
 /* -----------------------------------------------------------------------
    LIVE npm MODE — scans any real npm package via the server (/api/scan),
@@ -512,14 +544,21 @@ runBtn.addEventListener("click", runScan);
 ----------------------------------------------------------------------- */
 async function scanNpm(){
   const name = rootInput.value.trim();
-  if(!name) return;
-  npmBtn.disabled = runBtn.disabled = true;
-  const original = npmBtn.textContent;
+  if(!name){
+    rootInput.focus();
+    banner.className = "banner contaminated";
+    banner.innerHTML = `<strong>Enter an npm package name to scan.</strong>` +
+      `<span class="src">Or click <em>Example: Gatsby case</em> (top right) for the demo.</span>`;
+    return;
+  }
+  scanBtn.disabled = exampleBtn.disabled = true;
+  const original = scanBtn.textContent;
   sourcesBox.style.display = "none";   // live mode doesn't fetch Tavily citations
+  showDemoToggle(false);               // not the Gatsby demo → hide the toggle
 
   banner.className = "banner clean";
   banner.innerHTML = `<strong>Resolving ${name} from deps.dev…</strong>`;
-  npmBtn.textContent = "Scanning…";
+  scanBtn.textContent = "Scanning…";
 
   try{
     const res = await fetch("/api/scan?package=" + encodeURIComponent(name));
@@ -549,30 +588,29 @@ async function scanNpm(){
       `<span class="src">${err.message}. Try an exact npm package name (e.g. gatsby, express, eslint). ` +
       `Live mode needs the server running — open http://localhost:3000.</span>`;
   }finally{
-    npmBtn.textContent = original;
-    npmBtn.disabled = runBtn.disabled = false;
+    scanBtn.textContent = original;
+    scanBtn.disabled = exampleBtn.disabled = false;
   }
 }
-npmBtn.addEventListener("click", scanNpm);
+scanBtn.addEventListener("click", scanNpm);
+// Enter in the input box triggers a live scan
+rootInput.addEventListener("keydown", e=>{ if(e.key === "Enter") scanNpm(); });
 
 // THE KICKER — live, instant, runs on embedded data (no API). Restores the
 // gatsby demo graph first, so it works even after a live npm scan.
 swSelect.addEventListener("change", ()=>{
   loadDemoGraph();                               // back to the embedded tree
   licenses["smartwrap"] = swSelect.value;        // mutate the data
-  rootInput.value = "gatsby";
   sourcesBox.style.display = "none";
+  showDemoToggle(true);                          // still the demo view
   const result = deriveContamination("gatsby");  // recompute locally
   result.__live = true;                          // label the source
   render(result);
 });
 
-// initial load: smartwrap = GPL-2.0 (contaminated), via the stub.
-window.addEventListener("DOMContentLoaded", async ()=>{
-  const result = await getContaminationResult("gatsby");
-  render(result);
-  fetchSources();   // load citations on first paint too
-});
+// initial load: show the Gatsby contamination example (smartwrap = GPL-2.0),
+// so the headline demo is visible immediately and one click re-loads it.
+window.addEventListener("DOMContentLoaded", loadExample);
 </script>
 </body>
 </html>
