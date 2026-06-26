@@ -449,6 +449,54 @@ function runConcept(){
   });
 }
 
+/* upload one CSV to the Prometheux disk ROOT (multipart/form-data, no deps).
+   contaminated_path2 reads disk/packages.csv + disk/dependencies.csv. */
+function uploadCsv(filename, content){
+  return new Promise(resolve=>{
+    const base  = process.env.PMTX_API_URL;
+    const token = process.env.PMTX_TOKEN;
+    if(!base || !token) return resolve({ ok:false, error:"PMTX not configured" });
+    const url = base.replace(/\/?$/,"/") + "api/v1/data/files/upload";
+    const boundary = "----pmtx" + Date.now() + Math.random().toString(16).slice(2);
+    const pre  = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
+                 `Content-Type: text/csv\r\n\r\n`;
+    const post = `\r\n--${boundary}\r\nContent-Disposition: form-data; name="path"\r\n\r\n\r\n--${boundary}--\r\n`;
+    const body = Buffer.concat([Buffer.from(pre,"utf8"), Buffer.from(content,"utf8"), Buffer.from(post,"utf8")]);
+    const req = https.request(url, {
+      method:"POST",
+      headers:{
+        "Authorization":"Bearer " + token,
+        "Content-Type":"multipart/form-data; boundary=" + boundary,
+        "Content-Length":body.length,
+        "Accept":"application/json",
+      },
+    }, res=>{
+      let d=""; res.on("data",c=>d+=c);
+      res.on("end",()=>{
+        let j; try{ j = JSON.parse(d); }catch{}
+        if(res.statusCode>=200 && res.statusCode<300 && j && j.status==="success") resolve({ ok:true });
+        else resolve({ ok:false, error:(j && j.message) || ("upload HTTP " + res.statusCode) });
+      });
+    });
+    req.on("error", e=> resolve({ ok:false, error:e.message }));
+    req.setTimeout(20000, ()=>{ req.destroy(); resolve({ ok:false, error:"upload timed out" }); });
+    req.write(body); req.end();
+  });
+}
+
+const csvCell = s => String(s==null ? "" : s).replace(/[\r\n,]/g," ").trim();
+const packagesCsv     = pkgs => "name,license\n"  + pkgs.map(p=>`${csvCell(p.name)},${csvCell(p.license)}`).join("\n") + "\n";
+const dependenciesCsv = deps => "parent,child\n" + deps.map(d=>`${csvCell(d.parent)},${csvCell(d.child)}`).join("\n") + "\n";
+
+/* upload our graph as the two CSVs, then run contaminated_path2 over it */
+async function runReasoning(packages, dependencies){
+  const u1 = await uploadCsv("packages.csv", packagesCsv(packages));
+  if(!u1.ok) return { ok:false, error:"packages upload failed: " + u1.error };
+  const u2 = await uploadCsv("dependencies.csv", dependenciesCsv(dependencies));
+  if(!u2.ok) return { ok:false, error:"dependencies upload failed: " + u2.error };
+  return runConcept();   // reads the freshly-uploaded CSVs
+}
+
 /* ---- static file serving ------------------------------------------- */
 const MIME = { ".html":"text/html", ".csv":"text/csv", ".js":"text/javascript",
                ".css":"text/css", ".md":"text/markdown" };
@@ -490,11 +538,18 @@ http.createServer(async (req, res)=>{
     return;
   }
 
-  if(url === "/api/prometheux"){
-    const r = await runConcept();
+  if(url === "/api/prometheux-run" && req.method === "POST"){
+    // Upload the caller's graph as CSVs, then run contaminated_path2 over it.
+    const b = await readJsonBody(req);
+    const pkgs = b.packages || [], deps = b.dependencies || [];
+    if(!pkgs.length){
+      res.writeHead(200, { "Content-Type":"application/json" });
+      return res.end(JSON.stringify({ ok:false, error:"no packages provided" }));
+    }
+    const r = await runReasoning(pkgs, deps);
     console.log(r.ok
-      ? `🧠 Prometheux ran: ${r.rows.length} row(s) in ${r.elapsedMs}ms`
-      : `⚠️  Prometheux call failed: ${r.error}`);
+      ? `🧠 Prometheux (live): ${r.rows.length} row(s) over ${pkgs.length} pkgs in ${r.elapsedMs}ms`
+      : `⚠️  Prometheux (live) failed: ${r.error}`);
     res.writeHead(200, { "Content-Type":"application/json" });
     res.end(JSON.stringify(r));
     return;

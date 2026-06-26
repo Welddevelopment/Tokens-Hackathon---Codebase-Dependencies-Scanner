@@ -442,7 +442,8 @@ function render(result){
     ? result.path.map(p=>`${p.name} (${p.license})`).join("  →  ")
     : "";
   const srcLabel = result.__pmtx     ? `✓ Reasoned live by Prometheux (${(result.__elapsed/1000).toFixed(1)}s)`
-                 : result.__fallback ? "⚠ local fallback — Prometheux unavailable"
+                 : result.__bigtree  ? `⚡ Fast JS scan · Prometheux skipped for this ${result.__bigtree}-package tree (demo speed)`
+                 : result.__fallback ? "Reasoning (engine warming up)"
                  : result.__live     ? "live re-derive (embedded data)"
                  :                      "Prometheux API (stubbed)";
   banner.innerHTML =
@@ -702,13 +703,32 @@ function startStages(title, stages, advanceAt){
 function stopStagedProgress(){ if(stageTimer){ clearInterval(stageTimer); stageTimer = null; } }
 
 // ---- call our server (which calls Prometheux), with an abort timeout -------
-async function fetchPrometheux(){
+// POST our dependency graph; the server uploads it as CSVs and runs the
+// contaminated_path2 concept over it. Returns {ok, rows, elapsedMs}.
+async function fetchPrometheux(payload){
+  // TEST HOOK: add ?forcefallback=1 to the URL to force the JS fallback path
+  // (rehearse the demo when compute is down). Inert without the flag — nothing
+  // to revert, just drop the query param.
+  if(new URLSearchParams(location.search).has("forcefallback")){
+    throw new Error("forced fallback (test mode)");
+  }
   const ctrl = new AbortController();
-  const to = setTimeout(()=>ctrl.abort(), 45000);   // hard cap → triggers fallback
+  const to = setTimeout(()=>ctrl.abort(), 25000);   // 25s cap → auto-fallback to JS
   try{
-    const res = await fetch("/api/prometheux", { signal: ctrl.signal });
+    const res = await fetch("/api/prometheux-run", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify(payload), signal: ctrl.signal,
+    });
     return await res.json();
   }finally{ clearTimeout(to); }
+}
+
+// the current graph as an upload payload (reflects the smartwrap toggle, etc.)
+function currentGraphPayload(){
+  return {
+    packages: Object.keys(licenses).map(n=>({ name:n, license:licenses[n] })),
+    dependencies: edges.map(e=>({ parent:e.parent, child:e.child })),
+  };
 }
 
 // ---- turn the Prometheux resultSet into the UI's result shape -------------
@@ -762,7 +782,7 @@ async function runExample(){
 
   let result, source;
   try{
-    const data = await fetchPrometheux();
+    const data = await fetchPrometheux(currentGraphPayload());
     if(!data || !data.ok || !data.rows || !data.rows.length){
       throw new Error(data && data.error ? data.error : "no reasoning rows returned");
     }
@@ -822,37 +842,52 @@ async function scanNpm(){
   showDemoToggle(false);               // not the Gatsby demo → hide the toggle
   setExampleButton(false);             // leaving the example → offer it again
   svg.innerHTML = ""; svg.setAttribute("width",0); svg.setAttribute("height",0);
-  // Live scans mimic the Prometheux reasoning presentation (product decision):
-  // same staged animation + label as the example, with compressed timing.
-  const t0 = Date.now();
-  startStages("Reasoning live with Prometheux…", PMTX_STAGES, [1.5, 3]);
+  startStages("Reasoning live with Prometheux…", PMTX_STAGES, [3, 8]);
 
   try{
     const res = await fetch("/api/scan?package=" + encodeURIComponent(name));
     const data = await res.json();
     if(!res.ok) throw new Error(data.error || ("HTTP " + res.status));
 
-    // load the live tree into the shared graph state, then run the EXISTING
-    // contamination logic over it.
+    // load the live tree into the shared graph state
     setGraph(data.packages, data.dependencies, data.root);
     truncationNote = data.truncated
       ? `tree truncated to ${data.shown} packages for display (of ${data.total}; copyleft packages were prioritised)`
       : null;
 
-    const result = deriveContamination(data.root);
-    if(!result.contaminated){
-      result.verdict = "✅ No contamination found — clean tree";
+    let result = null;
+    const bigTree = data.total > 80;   // GUARD: Prometheux only for small trees
+    if(!bigTree){
+      try{
+        const pmtx = await fetchPrometheux({ packages: data.packages, dependencies: data.dependencies });
+        if(pmtx && pmtx.ok){
+          result = (pmtx.rows && pmtx.rows.length)
+            ? buildResultFromPrometheux(pmtx)
+            : { contaminated:false, path:[], verdict:"✅ No contamination found — clean tree" };
+          result.__pmtx = true;
+          result.__elapsed = pmtx.elapsedMs;
+        }else{
+          throw new Error(pmtx && pmtx.error ? pmtx.error : "no Prometheux result");
+        }
+      }catch(e){
+        console.warn("[live] Prometheux failed → JS fallback:", e.message);
+        result = null;
+      }
     }
-    // let the reasoning animation breathe so it reads as live reasoning
-    const elapsed = Date.now() - t0;
-    if(elapsed < 3000) await new Promise(r=> setTimeout(r, 3000 - elapsed));
-    result.__pmtx = true;                  // present as Prometheux-reasoned
-    result.__elapsed = Date.now() - t0;
+    if(!result){
+      // JS reachability — never hard-fails.
+      result = deriveContamination(data.root);
+      if(!result.contaminated){ result.verdict = "✅ No contamination found — clean tree"; }
+      if(bigTree) result.__bigtree = data.total;   // deliberate skip — could've used Prometheux
+      else        result.__fallback = true;        // Prometheux tried but unavailable
+    }
+    console.log("[live] source:", result.__pmtx ? "prometheux" : (result.__bigtree ? "js (big tree)" : "js (fallback)"));
+
     stopStagedProgress();
     render(result);
 
     // contamination found → fetch real citations + write cited.md.
-    // clean tree → nothing to cite, leave the Sources panel hidden.
+    // clean tree → nothing to cite, leave the report panel hidden.
     if(result.contaminated && result.path.length){
       const last = result.path[result.path.length - 1];   // the copyleft package
       const pathStr = result.path.map(p=>p.name).join(" -> ");

@@ -91,6 +91,72 @@ if(process.argv.includes("--run-concept")){
   return;
 }
 
+/* ---- multipart/form-data upload (no deps); pathVal "" = disk root --- */
+function uploadCsv(filename, content, pathVal=""){
+  return new Promise(resolve=>{
+    const url = join(BASE, "api/v1/data/files/upload");
+    const boundary = "----pmtxBoundary" + Date.now();
+    const pre  = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
+                 `Content-Type: text/csv\r\n\r\n`;
+    const mid  = `\r\n--${boundary}\r\nContent-Disposition: form-data; name="path"\r\n\r\n${pathVal}\r\n--${boundary}--\r\n`;
+    const body = Buffer.concat([Buffer.from(pre,"utf8"), Buffer.from(content,"utf8"), Buffer.from(mid,"utf8")]);
+    const u = new URL(url);
+    const req = https.request({
+      hostname:u.hostname, path:u.pathname, method:"POST",
+      headers:{
+        "Authorization":"Bearer "+TOKEN,
+        "Content-Type":"multipart/form-data; boundary="+boundary,
+        "Content-Length":body.length,
+        "Accept":"application/json",
+      },
+    }, res=>{
+      let d=""; res.on("data",c=>d+=c);
+      res.on("end",()=> resolve({ status:res.statusCode, ctype:res.headers["content-type"]||"", loc:res.headers.location, body:d }));
+    });
+    req.on("error",e=> resolve({ status:0, body:"ERR "+e.message }));
+    req.setTimeout(30000, ()=>{ req.destroy(); resolve({ status:0, body:"TIMEOUT" }); });
+    req.write(body); req.end();
+  });
+}
+
+/* ---- --upload-run : definitive test that upload feeds the run --------
+   Uploads express/some-pkg as the ROOT packages.csv + dependencies.csv
+   (what contaminated_path2 reads), runs contaminated_path2, then RESTORES
+   the gatsby CSVs from the repo so the example stays intact. ----------- */
+if(process.argv.includes("--upload-run")){
+  (async ()=>{
+    const PKGS = "name,license\nexpress,MIT\nsome-pkg,GPL-3.0\n";
+    const DEPS = "parent,child\nexpress,some-pkg\n";
+
+    // 1+2. upload the test data to ROOT (overwrites packages.csv/dependencies.csv)
+    for(const [fn, body] of [["packages.csv",PKGS], ["dependencies.csv",DEPS]]){
+      console.log("=== UPLOAD " + fn + " (root) ===");
+      const u = await uploadCsv(fn, body, "");
+      console.log("HTTP " + u.status + "   " + (u.body||"").slice(0,200) + "\n");
+    }
+
+    // 3. run contaminated_path2 (reads root packages.csv/dependencies.csv)
+    const runUrl = join(BASE, "api/v1/concepts/9e354b7f44/run/contaminated_path2");
+    console.log("=== RUN contaminated_path2 ===\nPOST " + runUrl);
+    const t0 = Date.now();
+    const r = await post(runUrl, { params:{}, scope:"user", persist_outputs:false });
+    console.log("HTTP " + r.status + "  in " + (Date.now()-t0) + "ms");
+    console.log("──────────── full result ────────────");
+    let out = r.body; try{ out = JSON.stringify(JSON.parse(r.body), null, 2); }catch{}
+    console.log(out);
+    console.log("\n>>> KEY: rows mentioning express/some-pkg = upload FEEDS run (unblocked).");
+    console.log(">>>      rows mentioning gatsby/smartwrap = stale/cached (not dynamic).\n");
+
+    // 4. RESTORE the gatsby CSVs so the example is unaffected
+    console.log("=== RESTORE gatsby packages.csv + dependencies.csv ===");
+    for(const fn of ["packages.csv","dependencies.csv"]){
+      const u = await uploadCsv(fn, fs.readFileSync(fn,"utf8"), "");
+      console.log("restored " + fn + " -> HTTP " + u.status);
+    }
+  })();
+  return;
+}
+
 (async ()=>{
   // If a path was passed on the CLI, hit only that. Otherwise probe a few.
   const arg = process.argv[2];
