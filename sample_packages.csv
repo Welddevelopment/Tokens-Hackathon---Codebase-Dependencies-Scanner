@@ -1,0 +1,9 @@
+name,license
+PaySwift,Proprietary
+web-core,MIT
+auth-kit,MIT
+data-layer,Apache-2.0
+http-engine,MIT
+stream-parser,MIT
+fast-xml,GPL-3.0
+token-utils,MIT

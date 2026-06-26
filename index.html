@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>License Contamination Scanner</title>
+<style>
+  /* ---------------------------------------------------------------------
+     All styling lives here. No build step, no frameworks — this file runs
+     by double-clicking it. That is deliberate: it must work in a live demo
+     with zero setup.
+  --------------------------------------------------------------------- */
+  :root{
+    --bg:#0b0f17; --panel:#121826; --ink:#e6edf6; --muted:#8a97ad;
+    --green:#22c55e; --green-dim:#15351f;
+    --red:#ef4444;   --red-dim:#3a1414;
+    --root:#3b82f6;  --root-dim:#10243f;
+    --line:#2a3346;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  header{padding:20px 24px 8px;}
+  h1{margin:0; font-size:20px; letter-spacing:.2px;}
+  .sub{color:var(--muted); font-size:13px; margin-top:4px;}
+
+  .controls{
+    display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+    padding:12px 24px;
+  }
+  .controls input[type=text]{
+    background:var(--panel); border:1px solid var(--line); color:var(--ink);
+    padding:10px 12px; border-radius:8px; font-size:14px; min-width:180px;
+  }
+  button{
+    background:var(--root); color:#fff; border:0; padding:10px 16px;
+    border-radius:8px; font-size:14px; font-weight:600; cursor:pointer;
+  }
+  button:disabled{opacity:.6; cursor:default;}
+  .kicker{
+    display:flex; gap:8px; align-items:center; margin-left:auto;
+    background:var(--panel); border:1px solid var(--line);
+    padding:8px 12px; border-radius:8px; font-size:13px;
+  }
+  .kicker select{
+    background:var(--bg); color:var(--ink); border:1px solid var(--line);
+    border-radius:6px; padding:6px 8px; font-size:13px;
+  }
+  .kicker .tag{color:var(--muted)}
+
+  /* Verdict banner -------------------------------------------------- */
+  .banner{
+    margin:8px 24px; padding:14px 16px; border-radius:10px;
+    font-size:15px; line-height:1.45; border:1px solid transparent;
+    transition:background .25s, border-color .25s;
+  }
+  .banner.contaminated{background:var(--red-dim); border-color:var(--red); }
+  .banner.clean{background:var(--green-dim); border-color:var(--green); }
+  .banner .path{
+    display:block; margin-top:8px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-size:12.5px; color:var(--ink); opacity:.9; word-break:break-word;
+  }
+  .banner .src{display:block;margin-top:6px;font-size:11px;color:var(--muted)}
+
+  /* Sources (Tavily citations) ------------------------------------- */
+  .sources{margin:8px 24px; padding:14px 16px; border-radius:10px;
+    background:var(--panel); border:1px solid var(--line);}
+  .sources .srcs-title{font-size:13px; font-weight:700; letter-spacing:.3px;
+    text-transform:uppercase; color:var(--muted); margin-bottom:10px;}
+  .sources .srcs-loading{font-size:14px; color:var(--ink);}
+  .sources .srcs-loading .dots::after{content:""; animation:dots 1.2s steps(4,end) infinite;}
+  @keyframes dots{0%{content:""}25%{content:"."}50%{content:".."}75%{content:"..."}100%{content:""}}
+  .sources .srcs-error{font-size:13px; color:#fca5a5; line-height:1.5;}
+  .sources .srcs-error code{background:#0b0f17;padding:2px 6px;border-radius:4px;}
+  .sources ol{margin:0; padding-left:20px;}
+  .sources li{margin:8px 0; font-size:14px;}
+  .sources li .lbl{color:var(--ink); font-weight:600;}
+  .sources li a{color:var(--root); text-decoration:none; word-break:break-all;}
+  .sources li a:hover{text-decoration:underline;}
+  .sources li .missing{color:var(--muted); font-style:italic;}
+
+  /* Graph ----------------------------------------------------------- */
+  .graphwrap{overflow:auto; padding:8px 24px 24px;}
+  svg{display:block;}
+
+  .edge{stroke:var(--line); stroke-width:2; fill:none;}
+  .edge.path{stroke:var(--red); stroke-width:3;}
+
+  .node rect{stroke-width:2; rx:9; }
+  .node text{font-size:12px; fill:var(--ink); }
+  .node .lic{font-size:10px; fill:var(--muted);}
+
+  .node.permissive rect{fill:var(--green-dim); stroke:var(--green);}
+  .node.copyleft   rect{fill:var(--red-dim);   stroke:var(--red);}
+  .node.root       rect{fill:var(--root-dim);  stroke:var(--root); stroke-width:3;}
+
+  /* highlight + animation for the contaminated path */
+  .node.onpath rect{filter:drop-shadow(0 0 8px var(--red)); animation:pulse 1.1s ease-in-out infinite;}
+  @keyframes pulse{0%,100%{filter:drop-shadow(0 0 4px var(--red));}50%{filter:drop-shadow(0 0 14px var(--red));}}
+
+  .edge.path.animate{stroke-dasharray:var(--len); stroke-dashoffset:var(--len);
+    animation:draw .55s ease forwards;}
+  @keyframes draw{to{stroke-dashoffset:0;}}
+
+  .legend{display:flex;gap:16px;flex-wrap:wrap;padding:0 24px 20px;color:var(--muted);font-size:12px}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .swatch{width:12px;height:12px;border-radius:3px;border:2px solid}
+  .sw-green{background:var(--green-dim);border-color:var(--green)}
+  .sw-red{background:var(--red-dim);border-color:var(--red)}
+  .sw-root{background:var(--root-dim);border-color:var(--root)}
+</style>
+</head>
+<body>
+  <header>
+    <h1>License Contamination Scanner</h1>
+    <div class="sub">Detect hidden GPL/copyleft contamination in a dependency tree and prove the exact path.</div>
+  </header>
+
+  <div class="controls">
+    <input id="rootInput" type="text" value="gatsby" spellcheck="false" />
+    <button id="runBtn">Run scan</button>
+
+    <!-- THE KICKER: live license toggle on smartwrap. Runs on the embedded
+         data (not the API), so it works fully right now. -->
+    <label class="kicker">
+      <span class="tag">smartwrap license:</span>
+      <select id="smartwrapLicense">
+        <option value="GPL-2.0" selected>GPL-2.0</option>
+        <option value="MIT">MIT</option>
+      </select>
+    </label>
+  </div>
+
+  <div id="banner" class="banner clean">Loading…</div>
+
+  <!-- Tavily-sourced citations for the contamination finding. Populated on
+       each scan; kept in window.__sources for cited.md next. -->
+  <div id="sources" class="sources" style="display:none"></div>
+
+  <div class="legend">
+    <span><i class="swatch sw-root"></i> root package</span>
+    <span><i class="swatch sw-green"></i> permissive (MIT / ISC / Apache)</span>
+    <span><i class="swatch sw-red"></i> GPL / copyleft</span>
+  </div>
+
+  <div class="graphwrap"><svg id="graph"></svg></div>
+
+<script>
+/* =======================================================================
+   1. EMBEDDED DATA
+   These strings mirror packages.csv and dependencies.csv exactly. We embed
+   them (instead of fetch()) because fetching local files fails on file://
+   in Chrome — embedding guarantees the demo always runs. To load the real
+   CSV files later, replace these constants with a fetch() + the same
+   parseCSV() below.
+======================================================================= */
+const PACKAGES_CSV = `name,license
+gatsby,MIT
+gatsby-recipes,MIT
+graphql-tools-schema,MIT
+value-or-promise,MIT
+graphql-compose,MIT
+react-dev-utils,MIT
+chalk,MIT
+ansi-styles,MIT
+date-fns,MIT
+semver,ISC
+micromatch,MIT
+to-readable-stream,MIT
+smartwrap,GPL-2.0`;
+
+const DEPENDENCIES_CSV = `parent,child
+gatsby,gatsby-recipes
+gatsby,react-dev-utils
+gatsby,date-fns
+gatsby-recipes,graphql-tools-schema
+gatsby-recipes,micromatch
+graphql-tools-schema,value-or-promise
+graphql-tools-schema,graphql-compose
+value-or-promise,to-readable-stream
+to-readable-stream,smartwrap
+react-dev-utils,chalk
+chalk,ansi-styles
+date-fns,semver`;
+
+/* Tiny CSV parser — assumes no quoted commas (our data has none). */
+function parseCSV(text){
+  const [head, ...rows] = text.trim().split(/\r?\n/);
+  const cols = head.split(",");
+  return rows.map(line=>{
+    const cells = line.split(",");
+    const obj = {};
+    cols.forEach((c,i)=> obj[c] = cells[i]);
+    return obj;
+  });
+}
+
+// licenses: name -> license string. MUTABLE — the smartwrap toggle edits it.
+const licenses = {};
+parseCSV(PACKAGES_CSV).forEach(p=> licenses[p.name] = p.license);
+
+// edges + adjacency (this is a tree: each child has exactly one parent)
+const edges = parseCSV(DEPENDENCIES_CSV).map(d=>({parent:d.parent, child:d.child}));
+const children = {};                 // parent -> [children] in file order
+edges.forEach(({parent,child})=>{
+  (children[parent] ||= []).push(child);
+});
+
+/* A license is "copyleft" if it mentions GPL (covers GPL/AGPL/LGPL). */
+function isCopyleft(license){ return /GPL/i.test(license || ""); }
+
+/* =======================================================================
+   2. THE STUB  ←←←  REPLACE THIS WITH THE REAL PROMETHEUX API CALL LATER
+   -----------------------------------------------------------------------
+   Right now it returns the KNOWN result for gatsby. It is async and shaped
+   exactly like the live API response, so swapping it in is a one-function
+   change:
+
+       async function getContaminationResult(root){
+         const res = await fetch(PMTX_API_URL, { ...send dependency data... });
+         return await res.json();   // same { verdict, contaminated, path, reason }
+       }
+
+   Returned shape:
+     { contaminated: boolean,
+       path: [{ name, license }, ...],   // root -> ... -> copyleft pkg
+       verdict: string,                  // plain-English banner text
+       reason: string }
+======================================================================= */
+const KNOWN_GATSBY_RESULT = {
+  contaminated: true,
+  path: [
+    {name:"gatsby",               license:"MIT"},
+    {name:"gatsby-recipes",       license:"MIT"},
+    {name:"graphql-tools-schema", license:"MIT"},
+    {name:"value-or-promise",     license:"MIT"},
+    {name:"to-readable-stream",   license:"MIT"},
+    {name:"smartwrap",            license:"GPL-2.0"},
+  ],
+  verdict:"⚠️ gatsby is legally exposed — a GPL-2.0 dependency (smartwrap) is reachable via this path.",
+  reason:"A copyleft (GPL-2.0) package is reachable from the MIT-licensed root.",
+};
+
+async function getContaminationResult(root){
+  // Simulate the network round-trip so the loading state is visible in demos.
+  await new Promise(r=>setTimeout(r, 550));
+  // STUB: hardcoded known answer for gatsby. (Real API would compute this.)
+  if(root === "gatsby") return structuredClone(KNOWN_GATSBY_RESULT);
+  // Graceful fallback for any other input until the API is wired:
+  return deriveContamination(root);
+}
+
+/* =======================================================================
+   3. LOCAL CONTAMINATION ENGINE (powers the live smartwrap toggle)
+   Walks the embedded tree from `root` and returns the first path that
+   reaches a copyleft package. Same return shape as the stub above.
+======================================================================= */
+function deriveContamination(root){
+  let found = null;
+  (function dfs(node, trail){
+    if(found) return;
+    const trail2 = [...trail, node];
+    if(node !== root && isCopyleft(licenses[node])){ found = trail2; return; }
+    for(const c of (children[node] || [])) dfs(c, trail2);
+  })(root, []);
+
+  if(!found){
+    return {
+      contaminated:false, path:[],
+      verdict:`✅ ${root} is clean — no GPL/copyleft dependency is reachable.`,
+      reason:"Every reachable dependency uses a permissive license.",
+    };
+  }
+  const last = found[found.length-1];
+  return {
+    contaminated:true,
+    path: found.map(n=>({name:n, license:licenses[n]})),
+    verdict:`⚠️ ${root} is legally exposed — a ${licenses[last]} dependency (${last}) is reachable via this path.`,
+    reason:`A copyleft (${licenses[last]}) package is reachable from the ${licenses[root]}-licensed root.`,
+  };
+}
+
+/* =======================================================================
+   4. GRAPH LAYOUT  (computed once — positions don't change with licenses)
+   Simple tree layout: leaves get evenly spaced x positions in DFS order,
+   internal nodes sit at the average x of their children. y = depth.
+======================================================================= */
+const H_GAP = 175, V_GAP = 110, NODE_H = 46, PAD = 40;
+const pos = {};   // name -> {x,y,depth}
+(function layout(){
+  let leafX = 0;
+  (function assign(node, depth){
+    const kids = children[node] || [];
+    pos[node] = {x:0, y:depth*V_GAP + PAD, depth};
+    if(kids.length === 0){
+      pos[node].x = leafX * H_GAP + PAD + 80;
+      leafX++;
+    }else{
+      kids.forEach(k=>assign(k, depth+1));
+      // center over children
+      pos[node].x = (pos[kids[0]].x + pos[kids[kids.length-1]].x)/2;
+    }
+  })("gatsby", 0);
+})();
+
+function nodeWidth(name){ return Math.max(104, name.length*7.4 + 26); }
+
+/* =======================================================================
+   5. RENDER
+======================================================================= */
+const svg    = document.getElementById("graph");
+const banner = document.getElementById("banner");
+
+function classFor(name){
+  if(name === "gatsby") return "root";
+  return isCopyleft(licenses[name]) ? "copyleft" : "permissive";
+}
+
+function render(result){
+  // ---- banner ----
+  banner.className = "banner " + (result.contaminated ? "contaminated" : "clean");
+  const pathText = result.contaminated
+    ? result.path.map(p=>`${p.name} (${p.license})`).join("  →  ")
+    : "";
+  banner.innerHTML =
+    `<strong>${result.verdict}</strong>` +
+    (pathText ? `<span class="path">${pathText}</span>` : "") +
+    `<span class="src">Source: ${result.__live ? "live re-derive (embedded data)" : "Prometheux API (stubbed)"}</span>`;
+
+  // sets for highlighting
+  const onPath = new Set(result.path.map(p=>p.name));
+  const pathEdges = new Set();
+  for(let i=0;i<result.path.length-1;i++){
+    pathEdges.add(result.path[i].name + "→" + result.path[i+1].name);
+  }
+
+  // ---- svg bounds ----
+  let maxX=0, maxY=0;
+  Object.entries(pos).forEach(([n,p])=>{
+    maxX = Math.max(maxX, p.x + nodeWidth(n)/2);
+    maxY = Math.max(maxY, p.y + NODE_H);
+  });
+  svg.setAttribute("width",  maxX + PAD);
+  svg.setAttribute("height", maxY + PAD);
+
+  // ---- build edges ----
+  let edgeHTML = "";
+  edges.forEach(({parent,child})=>{
+    const a = pos[parent], b = pos[child];
+    const x1=a.x, y1=a.y+NODE_H, x2=b.x, y2=b.y;
+    const my=(y1+y2)/2;
+    const d=`M${x1},${y1} C${x1},${my} ${x2},${my} ${x2},${y2}`;
+    const isPath = pathEdges.has(parent+"→"+child);
+    edgeHTML += `<path class="edge${isPath?' path':''}" data-pathedge="${isPath}" d="${d}"></path>`;
+  });
+
+  // ---- build nodes ----
+  let nodeHTML = "";
+  Object.keys(pos).forEach(name=>{
+    const p = pos[name], w = nodeWidth(name);
+    const cls = classFor(name) + (onPath.has(name) ? " onpath" : "");
+    const rootTag = name==="gatsby" ? `<text class="lic" x="${p.x}" y="${p.y-6}" text-anchor="middle">ROOT</text>` : "";
+    nodeHTML += `
+      <g class="node ${cls}">
+        ${rootTag}
+        <rect x="${p.x-w/2}" y="${p.y}" width="${w}" height="${NODE_H}" rx="9"></rect>
+        <text x="${p.x}" y="${p.y+20}" text-anchor="middle">${name}</text>
+        <text class="lic" x="${p.x}" y="${p.y+36}" text-anchor="middle">${licenses[name]}</text>
+      </g>`;
+  });
+
+  svg.innerHTML = edgeHTML + nodeHTML;
+
+  // ---- animate the contaminated path edges sequentially ----
+  if(result.contaminated){
+    const paths = svg.querySelectorAll('path[data-pathedge="true"]');
+    paths.forEach((el, i)=>{
+      const len = el.getTotalLength();
+      el.style.setProperty("--len", len);
+      el.style.animationDelay = (i*0.45) + "s";
+      // force reflow so the animation restarts on every render
+      void el.getBoundingClientRect();
+      el.classList.add("animate");
+    });
+  }
+}
+
+/* =======================================================================
+   5b. SOURCES (Tavily citations)
+   On each scan we ask the backend (/api/sources) to run 3 real Tavily
+   searches and return the top result URL for each. Stored in
+   window.__sources so the next step can write them into cited.md.
+   This is citation sourcing — exactly 3 searches, not a research loop.
+======================================================================= */
+const sourcesBox = document.getElementById("sources");
+window.__sources = [];
+
+function renderSources(sources){
+  const items = sources.map(s=>{
+    if(s.url){
+      return `<li><span class="lbl">${s.label}:</span><br>
+                <a href="${s.url}" target="_blank" rel="noopener">${s.url}</a></li>`;
+    }
+    return `<li><span class="lbl">${s.label}:</span>
+              <span class="missing">no result found${s.error ? " ("+s.error+")" : ""}</span></li>`;
+  }).join("");
+  sourcesBox.innerHTML =
+    `<div class="srcs-title">Sources · verified via Tavily</div><ol>${items}</ol>`;
+}
+
+async function fetchSources(){
+  sourcesBox.style.display = "block";
+  sourcesBox.innerHTML =
+    `<div class="srcs-title">Sources · verified via Tavily</div>
+     <div class="srcs-loading">🔎 Fetching real sources<span class="dots"></span></div>`;
+  try{
+    const res = await fetch("/api/sources");
+    if(!res.ok){
+      const e = await res.json().catch(()=>({}));
+      throw new Error(e.error || ("HTTP " + res.status));
+    }
+    const data = await res.json();
+    window.__sources = data.sources;     // stored for cited.md next
+    renderSources(data.sources);
+  }catch(err){
+    sourcesBox.innerHTML =
+      `<div class="srcs-title">Sources · verified via Tavily</div>
+       <div class="srcs-error">Could not fetch sources: ${err.message}.<br>
+       Run the app with <code>node server.js</code> and set <code>TAVILY_API_KEY</code>
+       in <code>.env</code> — Tavily runs on the backend so the key stays secret.</div>`;
+  }
+}
+
+/* =======================================================================
+   6. WIRING
+======================================================================= */
+const runBtn   = document.getElementById("runBtn");
+const rootInput= document.getElementById("rootInput");
+const swSelect = document.getElementById("smartwrapLicense");
+
+// Run = canonical scan through the (stubbed) API. Resets smartwrap to its
+// GPL-2.0 default so the headline contaminated result always matches the
+// stub. The toggle below is for live what-if exploration.
+async function runScan(){
+  runBtn.disabled = true;
+  const original = runBtn.textContent;
+  runBtn.textContent = "Scanning… (Prometheux)";
+  swSelect.value = "GPL-2.0";
+  licenses["smartwrap"] = "GPL-2.0";
+  banner.className = "banner clean";
+  banner.innerHTML = "<strong>Scanning dependency tree…</strong>";
+
+  const result = await getContaminationResult(rootInput.value.trim() || "gatsby");
+  render(result);
+  fetchSources();   // alongside the result — load real citations (own loading state)
+
+  runBtn.textContent = original;
+  runBtn.disabled = false;
+}
+runBtn.addEventListener("click", runScan);
+
+// THE KICKER — live, instant, runs on embedded data (no API).
+swSelect.addEventListener("change", ()=>{
+  licenses["smartwrap"] = swSelect.value;        // mutate the data
+  const result = deriveContamination("gatsby");  // recompute locally
+  result.__live = true;                          // label the source
+  render(result);
+});
+
+// initial load: smartwrap = GPL-2.0 (contaminated), via the stub.
+window.addEventListener("DOMContentLoaded", async ()=>{
+  const result = await getContaminationResult("gatsby");
+  render(result);
+  fetchSources();   // load citations on first paint too
+});
+</script>
+</body>
+</html>

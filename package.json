@@ -1,0 +1,9 @@
+{
+  "name": "license-contamination-scanner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Detects hidden GPL/copyleft contamination in a dependency tree and proves the path.",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

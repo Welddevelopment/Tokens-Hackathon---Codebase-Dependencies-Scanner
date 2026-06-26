@@ -1,0 +1,14 @@
+name,license
+gatsby,MIT
+gatsby-recipes,MIT
+graphql-tools-schema,MIT
+value-or-promise,MIT
+graphql-compose,MIT
+react-dev-utils,MIT
+chalk,MIT
+ansi-styles,MIT
+date-fns,MIT
+semver,ISC
+micromatch,MIT
+to-readable-stream,MIT
+smartwrap,GPL-2.0

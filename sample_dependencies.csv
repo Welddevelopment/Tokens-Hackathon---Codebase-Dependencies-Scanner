@@ -1,0 +1,7 @@
+parent,child
+PaySwift,web-core
+PaySwift,auth-kit
+web-core,http-engine
+http-engine,stream-parser
+stream-parser,fast-xml
+auth-kit,token-utils

@@ -1,0 +1,13 @@
+parent,child
+gatsby,gatsby-recipes
+gatsby,react-dev-utils
+gatsby,date-fns
+gatsby-recipes,graphql-tools-schema
+gatsby-recipes,micromatch
+graphql-tools-schema,value-or-promise
+graphql-tools-schema,graphql-compose
+value-or-promise,to-readable-stream
+to-readable-stream,smartwrap
+react-dev-utils,chalk
+chalk,ansi-styles
+date-fns,semver
