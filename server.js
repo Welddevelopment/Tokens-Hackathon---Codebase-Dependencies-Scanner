@@ -350,7 +350,8 @@ async function scanNpmPackage(name){
    Token stays server-side. Returns a normalised { ok, rows, columns,
    elapsedMs } so the browser never sees the token and gets a stable shape.
 ======================================================================= */
-const PMTX_CONCEPT_PATH = "api/v1/concepts/9e354b7f44/run/contaminated_path";
+// contaminated_path2 reasons over the Gatsby dependency graph (gatsby → … → smartwrap)
+const PMTX_CONCEPT_PATH = "api/v1/concepts/9e354b7f44/run/contaminated_path2";
 
 function runConcept(){
   return new Promise(resolve=>{
@@ -379,10 +380,12 @@ function runConcept(){
         if(res.statusCode !== 200 || j.status !== "success"){
           return resolve({ ok:false, error:(j && j.message) || ("HTTP " + res.statusCode), raw:j });
         }
-        const ev   = (j.data && j.data.evaluation_results) || {};
-        const cols = (ev.columnNames && ev.columnNames.contaminated_path) || [];
-        const rows = (ev.resultSet  && ev.resultSet.contaminated_path)  || [];
-        resolve({ ok:true, elapsedMs: Date.now()-t0, serverElapsedMs: ev.elapsedTimeMs, columns:cols, rows });
+        const ev = (j.data && j.data.evaluation_results) || {};
+        // read whatever predicate the concept populated (e.g. contaminated_path2)
+        const predKey = ev.resultSet ? Object.keys(ev.resultSet)[0] : null;
+        const cols = (predKey && ev.columnNames && ev.columnNames[predKey]) || [];
+        const rows = (predKey && ev.resultSet[predKey]) || [];
+        resolve({ ok:true, elapsedMs: Date.now()-t0, serverElapsedMs: ev.elapsedTimeMs, predicate: predKey, columns:cols, rows });
       });
     });
     req.on("error", e=> resolve({ ok:false, error:e.message }));
