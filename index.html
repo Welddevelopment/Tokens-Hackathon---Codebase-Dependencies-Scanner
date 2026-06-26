@@ -516,29 +516,44 @@ const demoToggle = document.getElementById("demoToggle");
 // the toggle only belongs to the Gatsby demo view
 function showDemoToggle(show){ demoToggle.style.display = show ? "flex" : "none"; }
 
-// The Gatsby example — the canonical contaminated demo (stubbed Prometheux
-// result + Tavily citations + cited.md + ClickHouse). Always loads gatsby
-// with smartwrap = GPL-2.0 so the red path is the headline every time.
-async function loadExample(){
-  exampleBtn.disabled = scanBtn.disabled = true;
-  exampleBtn.textContent = "Loading…";
+// ARM the example: set up the Gatsby view (gatsby in the search bar, demo
+// mode) but DON'T run the analysis — nothing is revealed until Scan is clicked.
+function armExample(){
   loadDemoGraph();                  // the embedded gatsby tree (pristine demo)
-  rootInput.value = "gatsby";       // reflect the loaded example in the search bar
+  rootInput.value = "gatsby";       // reflect it in the search bar
   swSelect.value = "GPL-2.0";
   licenses["smartwrap"] = "GPL-2.0";
-  showDemoToggle(true);             // demo view → smartwrap toggle is relevant
+  showDemoToggle(false);            // toggle appears only after running
+  sourcesBox.style.display = "none";
+  setExampleButton(true);           // offer "Back to normal"
   banner.className = "banner clean";
-  banner.innerHTML = "<strong>Loading the Gatsby contamination example…</strong>";
+  banner.innerHTML =
+    `<strong>Gatsby example ready.</strong>` +
+    `<span class="src">Click <em>Scan</em> to trace the contamination path.</span>`;
+  svg.innerHTML = ""; svg.setAttribute("width", 0); svg.setAttribute("height", 0);
+}
+
+// RUN the example — the canonical contaminated demo (stubbed Prometheux
+// result + Tavily citations + cited.md + ClickHouse). Triggered by Scan.
+async function runExample(){
+  exampleBtn.disabled = scanBtn.disabled = true;
+  const orig = scanBtn.textContent;
+  scanBtn.textContent = "Scanning…";
+  loadDemoGraph();                  // embedded data (in case the toggle changed it)
+  licenses["smartwrap"] = swSelect.value || "GPL-2.0";
+  showDemoToggle(true);             // now the smartwrap toggle is relevant
+  banner.className = "banner clean";
+  banner.innerHTML = "<strong>Scanning dependency tree…</strong>";
 
   const result = await getContaminationResult("gatsby");
   render(result);
   fetchSources();   // alongside the result — load real citations (own loading state)
 
-  setExampleButton(true);   // in the example now → button offers "Back to normal"
+  scanBtn.textContent = orig;
   exampleBtn.disabled = scanBtn.disabled = false;
 }
 
-// The header button is context-aware: it loads the example in the normal
+// The header button is context-aware: it arms the example in the normal
 // view, and becomes "← Back to normal" while the example is showing.
 let inExample = false;
 function setExampleButton(on){
@@ -546,7 +561,7 @@ function setExampleButton(on){
   exampleBtn.innerHTML = on ? "←&nbsp; Back to normal" : "▶&nbsp; Example: Gatsby case";
   exampleBtn.classList.toggle("is-back", on);
 }
-exampleBtn.addEventListener("click", ()=>{ inExample ? showInitialState() : loadExample(); });
+exampleBtn.addEventListener("click", ()=>{ inExample ? showInitialState() : armExample(); });
 
 /* -----------------------------------------------------------------------
    LIVE npm MODE — scans any real npm package via the server (/api/scan),
@@ -604,9 +619,15 @@ async function scanNpm(){
     scanBtn.disabled = exampleBtn.disabled = false;
   }
 }
-scanBtn.addEventListener("click", scanNpm);
-// Enter in the input box triggers a live scan
-rootInput.addEventListener("keydown", e=>{ if(e.key === "Enter") scanNpm(); });
+// Scan dispatch: while the example is armed and the box still says "gatsby",
+// Scan RUNS the embedded example; otherwise it does a live deps.dev scan.
+function onScan(){
+  const name = rootInput.value.trim();
+  if(inExample && name === "gatsby") return runExample();
+  return scanNpm();
+}
+scanBtn.addEventListener("click", onScan);
+rootInput.addEventListener("keydown", e=>{ if(e.key === "Enter") onScan(); });
 
 // THE KICKER — live, instant, runs on embedded data (no API). Restores the
 // gatsby demo graph first, so it works even after a live npm scan.
