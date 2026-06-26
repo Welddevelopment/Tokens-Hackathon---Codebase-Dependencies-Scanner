@@ -503,6 +503,29 @@ function renderSources(sources){
     `<div class="srcs-title">Sources · verified via Tavily</div><ol>${items}</ol>`;
 }
 
+// Live-scan citations: only when a deps.dev scan FINDS contamination. Runs
+// 2 Tavily searches server-side (npm page + SPDX) and writes cited.md.
+async function fetchLiveSources(pkg, copyleftPkg, license, pathStr){
+  sourcesBox.style.display = "block";
+  sourcesBox.innerHTML =
+    `<div class="srcs-title">Sources · verified via Tavily</div>
+     <div class="srcs-loading">🔎 Fetching real sources<span class="dots"></span></div>`;
+  try{
+    const res = await fetch("/api/scan-sources", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ package:pkg, copyleftPkg, license, path:pathStr }),
+    });
+    const data = await res.json();
+    if(data.error) throw new Error(data.error);
+    window.__sources = data.sources;
+    renderSources(data.sources);
+  }catch(err){
+    sourcesBox.innerHTML =
+      `<div class="srcs-title">Sources · verified via Tavily</div>
+       <div class="srcs-error">Could not fetch sources: ${err.message}.</div>`;
+  }
+}
+
 async function fetchSources(){
   sourcesBox.style.display = "block";
   sourcesBox.innerHTML =
@@ -732,6 +755,14 @@ async function scanNpm(){
     result.__npm = true;
     stopStagedProgress();
     render(result);
+
+    // contamination found → fetch real citations + write cited.md.
+    // clean tree → nothing to cite, leave the Sources panel hidden.
+    if(result.contaminated && result.path.length){
+      const last = result.path[result.path.length - 1];   // the copyleft package
+      const pathStr = result.path.map(p=>p.name).join(" -> ");
+      fetchLiveSources(data.root, last.name, last.license, pathStr);
+    }
   }catch(err){
     stopStagedProgress();
     truncationNote = null;

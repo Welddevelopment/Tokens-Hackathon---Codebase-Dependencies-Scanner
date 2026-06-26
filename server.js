@@ -132,6 +132,61 @@ Potential exposure flagged for review, not a legal determination.
   console.log("📝 wrote cited.md");
 }
 
+/* ---- live-scan sources: 2 Tavily searches for a found copyleft package -
+   Only called when a live deps.dev scan finds contamination. Pins the npm
+   license page (npmjs.com) and the SPDX license definition (spdx.org). -- */
+async function getLiveSources(copyleftPkg, spdxId){
+  const searches = [
+    { key:"package", label:`${copyleftPkg} — npm license page`,
+      query:`${copyleftPkg} package`, domains:["npmjs.com"] },
+    { key:"spdx", label:`${spdxId} license definition`,
+      query:`${spdxId} license identifier definition`, domains:["spdx.org"] },
+  ];
+  return Promise.all(searches.map(async s=>{
+    try{
+      const top = await tavilySearch(s.query, { includeDomains: s.domains });
+      return { key:s.key, label:s.label, title:top.title, url:top.url };
+    }catch(err){
+      return { key:s.key, label:s.label, title:null, url:null, error:err.message };
+    }
+  }));
+}
+
+/* ---- write cited.md for a live scan finding ------------------------- */
+function writeLiveCitedReport(pkg, copyleftPkg, spdxId, pathStr, sources){
+  const byKey = Object.fromEntries(sources.map(s=>[s.key, s]));
+  const url = k => byKey[k] && byKey[k].url ? byKey[k].url : "[no source returned by Tavily]";
+  const md = `# License Contamination Report: ${pkg}
+
+## Verdict
+⚠️ CONTAMINATED — a copyleft (${spdxId}) dependency (${copyleftPkg}) is reachable from ${pkg}.
+
+## Contamination Path
+${pathStr}
+
+## Why this matters
+${spdxId} is copyleft: a product that distributes code reaching this package may be obligated to release its source. This dependency is transitive — nobody chose ${copyleftPkg} directly.
+
+## Sources (retrieved live via Tavily)
+- ${copyleftPkg} license: ${url("package")}
+- ${spdxId} definition: ${url("spdx")}
+
+## Note
+Live scan via deps.dev. Potential exposure flagged for review, not a legal determination.
+`;
+  fs.writeFileSync(path.join(__dirname, "cited.md"), md, "utf8");
+  console.log("📝 wrote cited.md (live scan: " + pkg + ")");
+}
+
+/* read a JSON request body (for POST routes) */
+function readJsonBody(req){
+  return new Promise(resolve=>{
+    let d = "";
+    req.on("data", c=> d += c);
+    req.on("end", ()=>{ try{ resolve(JSON.parse(d || "{}")); }catch{ resolve({}); } });
+  });
+}
+
 /* =======================================================================
    ClickHouse storage (HTTPS interface, no client library).
    POST the SQL as the request body to https://{host}:{port}/ with HTTP
@@ -442,6 +497,23 @@ http.createServer(async (req, res)=>{
       : `⚠️  Prometheux call failed: ${r.error}`);
     res.writeHead(200, { "Content-Type":"application/json" });
     res.end(JSON.stringify(r));
+    return;
+  }
+
+  if(url === "/api/scan-sources" && req.method === "POST"){
+    const b = await readJsonBody(req);
+    const license = b.license || "GPL";
+    // extract a clean SPDX id (e.g. GPL-3.0) from a possibly-compound license string
+    const spdxId = (license.match(/[AL]?GPL[\w.\-]*/i) || [license])[0];
+    try{
+      const sources = await getLiveSources(b.copyleftPkg, spdxId);
+      writeLiveCitedReport(b.package, b.copyleftPkg, spdxId, b.path, sources);
+      res.writeHead(200, { "Content-Type":"application/json" });
+      res.end(JSON.stringify({ sources }));
+    }catch(err){
+      res.writeHead(200, { "Content-Type":"application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
     return;
   }
 
